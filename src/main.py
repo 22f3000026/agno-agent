@@ -1,41 +1,33 @@
-from flask import Flask, request, jsonify
-from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
+import json
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-import os
-import json
+from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
 
-app = Flask(__name__)
+# Setup agent + toolkits
+crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
+extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
+search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 
-# Initialize Tavily toolkits
-tavily_crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
-tavily_extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
-tavily_search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
-
-# Tavily agent
 tavily_agent = Agent(
     name="Tavily Agent",
     role=(
-        "You are a smart Tavily assistant. The user provides a URL or query. "
-        "If it's a URL without extra question, crawl it. "
-        "If asked to get specific info from URLs, extract it. "
-        "If given a search query, search it. "
-        "Choose the correct Tavily tool."
+        "You are a smart Tavily assistant. "
+        "Decide between crawl, extract, or search based on user input. "
+        "Return only the tool's JSON string output."
     ),
     model=OpenAIChat(id="gpt-4o"),
-    toolkits=[tavily_crawl_toolkit, tavily_extract_toolkit, tavily_search_toolkit]
+    toolkits=[crawl_toolkit, extract_toolkit, search_toolkit]
 )
 
-@app.route("/api/tavily", methods=["POST"])
-def tavily_handler():
-    data = request.get_json()
-
-    if not data or "input" not in data:
-        return jsonify({"error": "Missing 'input' field"}), 400
-
+def main(context):
     try:
+        body = json.loads(context.req.body or "{}")
+        user_input = body.get("input")
+        if not user_input:
+            return context.res.json({"error": "Missing 'input' field"}, 400)
+
         task = f"""
-        Input from user: {data['input']}
+        Input from user: {user_input}
 
         INSTRUCTIONS:
         - If input is a plain URL, use the crawl tool.
@@ -46,19 +38,18 @@ def tavily_handler():
 
         result = tavily_agent.run(task)
 
-        # Attempt to parse output
         try:
             response_data = json.loads(result.content)
         except json.JSONDecodeError:
-            return jsonify({"error": "Invalid response format from agent"}), 500
+            return context.res.json({"error": "Invalid response format from agent"}, 500)
 
         if isinstance(response_data, dict) and "error" in response_data:
-            return jsonify(response_data), 400
+            return context.res.json(response_data, 400)
 
-        return jsonify({
+        return context.res.json({
             "status": "success",
             "result": response_data
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return context.res.json({"error": str(e)}, 500)
