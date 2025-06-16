@@ -41,8 +41,8 @@ def main(context):
         - Return only the tool's JSON string output.
         """
 
-        result = tavily_agent.run(task)
-        context.log(result)
+        result = asyncio.run(tavily_agent.run(task))
+        context.log(f"Agent raw result: {result}")
 
         try:
             response_data = json.loads(result.content)
@@ -58,4 +58,5 @@ def main(context):
         })
 
     except Exception as e:
+        context.error(f"Exception: {str(e)}")  # Log the error properly
         return context.res.json({"error": str(e)}, 500)
