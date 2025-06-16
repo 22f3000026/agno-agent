@@ -6,6 +6,8 @@ from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from .tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
 
+TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
+
 # Setup agent + toolkits
 crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
 extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
