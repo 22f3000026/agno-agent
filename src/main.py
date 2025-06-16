@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 from agno.agent import Agent
 from agno.team import Team
 from agno.models.openai import OpenAIChat
@@ -201,15 +202,8 @@ content_team = Team(
     show_members_responses=True
 )
 
-def main(context):
+async def process_request(context, user_input, request_type):
     try:
-        body = json.loads(context.req.body or "{}")
-        user_input = body.get("input")
-        request_type = body.get("request_type", "content")  # Default to content request
-        
-        if not user_input:
-            return context.res.json({"error": "Missing 'input' field"}, 400)
-
         task = f"""
         Input from user: {user_input}
         Request type: {request_type}
@@ -222,40 +216,57 @@ def main(context):
         - Validate all outputs before returning
         """
 
+        result = await content_team.arun(task)
+        raw_output = result.content.strip()
+        context.log(f"Team raw result: {raw_output}")
+
+        # Remove markdown code block markers if present
+        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+        context.log(f"Cleaned output: {cleaned_output}")
+
+        # Try parsing if it's a JSON response
+        if request_type == "content":
+            try:
+                response_data = json.loads(cleaned_output)
+            except json.JSONDecodeError as e:
+                context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
+                return context.res.json({
+                    "error": "Team returned invalid JSON",
+                    "raw": cleaned_output
+                }, 500)
+        else:
+            response_data = cleaned_output
+
+        return context.res.json({
+            "status": "success",
+            "result": response_data
+        })
+
+    except Exception as e:
+        error_msg = str(e)
+        context.error(f"Team execution failed: {error_msg}")
+        return context.res.json({
+            "error": error_msg,
+            "type": "team_execution_error"
+        }, 500)
+
+def main(context):
+    try:
+        body = json.loads(context.req.body or "{}")
+        user_input = body.get("input")
+        request_type = body.get("request_type", "content")  # Default to content request
+        
+        if not user_input:
+            return context.res.json({"error": "Missing 'input' field"}, 400)
+
+        # Create event loop and run async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            result = content_team.run(task)
-            raw_output = result.content.strip()
-            context.log(f"Team raw result: {raw_output}")
-
-            # Remove markdown code block markers if present
-            cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-            context.log(f"Cleaned output: {cleaned_output}")
-
-            # Try parsing if it's a JSON response
-            if request_type == "content":
-                try:
-                    response_data = json.loads(cleaned_output)
-                except json.JSONDecodeError as e:
-                    context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
-                    return context.res.json({
-                        "error": "Team returned invalid JSON",
-                        "raw": cleaned_output
-                    }, 500)
-            else:
-                response_data = cleaned_output
-
-            return context.res.json({
-                "status": "success",
-                "result": response_data
-            })
-
-        except Exception as e:
-            error_msg = str(e)
-            context.error(f"Team execution failed: {error_msg}")
-            return context.res.json({
-                "error": error_msg,
-                "type": "team_execution_error"
-            }, 500)
+            result = loop.run_until_complete(process_request(context, user_input, request_type))
+            return result
+        finally:
+            loop.close()
 
     except Exception as e:
         context.error(f"General exception: {str(e)}")
