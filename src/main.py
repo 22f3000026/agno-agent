@@ -1,29 +1,18 @@
-from appwrite.client import Client
-from appwrite.services.users import Users
-from appwrite.exception import AppwriteException
-import os
-import json
-import io
-import sys
-
+from flask import Flask, request, jsonify
+from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
+import os
+import json
 
-from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
+app = Flask(__name__)
 
 # Initialize Tavily toolkits
 tavily_crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
 tavily_extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
 tavily_search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 
-# Funny agent (as in your original code)
-funny_agent = Agent(
-    name="Funny Agent",
-    role="You always reply in a funny, witty, or silly way. Your job is to make people smile while still answering their question.",
-    model=OpenAIChat(id="gpt-4o")
-)
-
-# Tavily agent: decides which tavily tool to use
+# Tavily agent
 tavily_agent = Agent(
     name="Tavily Agent",
     role=(
@@ -37,59 +26,39 @@ tavily_agent = Agent(
     toolkits=[tavily_crawl_toolkit, tavily_extract_toolkit, tavily_search_toolkit]
 )
 
-def main(context):
-    client = (
-        Client()
-        .set_endpoint(os.environ["APPWRITE_FUNCTION_API_ENDPOINT"])
-        .set_project(os.environ["APPWRITE_FUNCTION_PROJECT_ID"])
-        .set_key(context.req.headers["x-appwrite-key"])
-    )
-    users = Users(client)
+@app.route("/api/tavily", methods=["POST"])
+def tavily_handler():
+    data = request.get_json()
+
+    if not data or "input" not in data:
+        return jsonify({"error": "Missing 'input' field"}), 400
 
     try:
-        response = users.list()
-        context.log(f"Total users: {response['total']}")
-    except AppwriteException as err:
-        context.error(f"Could not list users: {repr(err)}")
+        task = f"""
+        Input from user: {data['input']}
 
-    if context.req.path == "/ping":
-        return context.res.text("Pong")
+        INSTRUCTIONS:
+        - If input is a plain URL, use the crawl tool.
+        - If input asks to extract details from a URL, use the extract tool.
+        - If input looks like a search query, use the search tool.
+        - Return only the tool's JSON string output.
+        """
 
-    try:
-        body = json.loads(context.req.body or "{}")
-    except json.JSONDecodeError:
-        return context.res.json({"error": "Invalid JSON in request body"}, 400)
+        result = tavily_agent.run(task)
 
-    # Funny agent endpoint
-    if context.req.path == "/funny":
-        prompt = body.get("prompt")
-        if not prompt:
-            return context.res.json({"error": "Missing 'prompt' in request body"}, 400)
-        return run_agent(funny_agent, prompt, context)
+        # Attempt to parse output
+        try:
+            response_data = json.loads(result.content)
+        except json.JSONDecodeError:
+            return jsonify({"error": "Invalid response format from agent"}), 500
 
-    # Tavily agent endpoint
-    if context.req.path == "/tavily":
-        user_input = body.get("input")
-        if not user_input:
-            return context.res.json({"error": "Missing 'input' (URL or query) in request body"}, 400)
-        return run_agent(tavily_agent, user_input, context)
+        if isinstance(response_data, dict) and "error" in response_data:
+            return jsonify(response_data), 400
 
-    return context.res.json({"error": "Invalid endpoint"}, 404)
+        return jsonify({
+            "status": "success",
+            "result": response_data
+        })
 
-def run_agent(agent, prompt, context):
-    try:
-        buffer = io.StringIO()
-        sys_stdout = sys.stdout
-        sys.stdout = buffer
-
-        agent.print_response(prompt, stream=False)
-
-        sys.stdout = sys_stdout
-        response_text = buffer.getvalue().strip()
-        context.log(f"{agent.name} output: {response_text}")
-
-        return context.res.json({"input": prompt, "response": response_text})
     except Exception as e:
-        sys.stdout = sys_stdout
-        context.error(f"{agent.name} failed: {repr(e)}")
-        return context.res.json({"error": f"{agent.name} failed", "details": str(e)}, 500)
+        return jsonify({"error": str(e)}), 500
