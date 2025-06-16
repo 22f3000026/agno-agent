@@ -11,8 +11,16 @@ class TavilyCrawlToolkit(Toolkit):
     def crawl_page(self, url: str) -> str:
         """
         Crawl a URL using Tavily API and return the crawl data as JSON string.
+        
+        Args:
+            url: The URL to crawl
+            
+        Returns:
+            JSON string containing crawled data
         """
         try:
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
             response = self.client.crawl(url=url)
             return json.dumps(response)
         except Exception as e:
@@ -36,7 +44,9 @@ class TavilyExtractToolkit(Toolkit):
             JSON string containing extracted data
         """
         try:
-            response = self.client.extract(urls=urls)
+            # Ensure URLs have proper protocol
+            processed_urls = [url if url.startswith(('http://', 'https://')) else 'https://' + url for url in urls]
+            response = self.client.extract(urls=processed_urls)
             return json.dumps(response)
         except Exception as e:
             raise Exception(f"Tavily extract failed: {str(e)}")
@@ -51,9 +61,17 @@ class TavilySearchToolkit(Toolkit):
     def search_query(self, query: str) -> str:
         """
         Perform a search using Tavily API and return search results as JSON string.
+        
+        Args:
+            query: The search query string
+            
+        Returns:
+            JSON string containing search results
         """
         try:
-            response = self.client.search(query=query)
+            if not query or not query.strip():
+                raise ValueError("Search query cannot be empty")
+            response = self.client.search(query=query.strip())
             return json.dumps(response)
         except Exception as e:
             raise Exception(f"Tavily search failed: {str(e)}")
