@@ -4,26 +4,74 @@ import json
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from .tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
+from agno.team import Team
 
 TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
 
-# Setup agent + toolkits
+# Setup toolkits
 crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
 extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
 search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 
-tavily_agent = Agent(
-    name="Tavily Agent",
+# Create specialized agents for each toolkit
+crawl_agent = Agent(
+    name="Tavily Crawl Agent",
     role=(
-        "You are a smart Tavily assistant that helps users interact with web content in different ways. "
-        "Your job is to analyze the user's input and select the most appropriate tool to handle their request. "
+        "You are a specialized web crawler that helps users traverse websites like a graph starting from a base URL. "
+        "Your job is to handle requests for crawling websites and following links to gather comprehensive content. "
         "You must return ONLY the tool's JSON output without any additional text or explanation."
     ),
     model=OpenAIChat(id="gpt-4o"),
-    tools=[crawl_toolkit, extract_toolkit, search_toolkit],
+    tools=[crawl_toolkit],
 )
 
+extract_agent = Agent(
+    name="Tavily Extract Agent",
+    role=(
+        "You are a specialized data extractor that helps users get content from one or more specified URLs. "
+        "Your job is to handle requests for extracting specific content from web pages without following links. "
+        "You must return ONLY the tool's JSON output without any additional text or explanation."
+    ),
+    model=OpenAIChat(id="gpt-4o"),
+    tools=[extract_toolkit],
+)
 
+search_agent = Agent(
+    name="Tavily Search Agent",
+    role=(
+        "You are a specialized search assistant that helps users find information about topics. "
+        "Your job is to handle search queries and questions about various subjects. "
+        "You must return ONLY the tool's JSON output without any additional text or explanation."
+    ),
+    model=OpenAIChat(id="gpt-4o"),
+    tools=[search_toolkit],
+)
+
+# Create the team with specialized agents
+tavily_team = Team(
+    name="Tavily Team",
+    mode="route",
+    model=OpenAIChat("gpt-4o"),
+    members=[crawl_agent, extract_agent, search_agent],
+    show_tool_calls=True,
+    markdown=True,
+    description="You are a smart router that directs web-related requests to the appropriate specialized agent.",
+    instructions=[
+        "Route the request based on these simple rules:",
+        "1. If the input contains the word 'crawl', route to CRAWL agent",
+        "2. If the input contains the word 'extract', route to EXTRACT agent",
+        "3. For all other inputs, route to SEARCH agent",
+        "",
+        "OUTPUT FORMAT:",
+        "- Return ONLY a valid JSON object",
+        "- Use double quotes for all keys and string values",
+        "- Do not include any markdown, explanations, or additional text",
+        "- Example: {\"url\": \"https://example.com\"} for crawl",
+        "- Example: {\"urls\": \"https://example1.com\"} for extract",
+        "- Example: {\"query\": \"machine learning basics\"} for search",
+    ],
+    show_members_responses=True,
+)
 
 def main(context):
     try:
@@ -32,40 +80,12 @@ def main(context):
         if not user_input:
             return context.res.json({"error": "Missing 'input' field"}, 400)
 
-        task = f"""
-        Input from user: {user_input}
-
-        TOOL SELECTION RULES:
-        1. Use the CRAWL tool when:
-           - Input is a single URL (e.g., "https://example.com" or "example.com")
-           - User wants to get the full content of a webpage
-           - Example: "crawl https://example.com" or "get content from example.com"
-
-        2. Use the EXTRACT tool when:
-           - Input contains multiple URLs
-           - User wants to extract specific information from URLs
-           - Example: "extract data from https://example1.com and https://example2.com"
-           - Example: "get details from these sites: example1.com, example2.com"
-
-        3. Use the SEARCH tool when:
-           - Input is a search query or question
-           - User wants to find information about a topic
-           - Example: "what is machine learning?" or "find information about climate change"
-           - Example: "search for latest news about AI"
-
-        OUTPUT FORMAT:
-        - Return ONLY a valid JSON object
-        - Use double quotes for all keys and string values
-        - Do not include any markdown, explanations, or additional text
-        - Example: {{"url": "https://example.com"}} for crawl
-        - Example: {{"urls": ["https://example1.com", "https://example2.com"]}} for extract
-        - Example: {{"query": "machine learning basics"}} for search
-        """
+        task = f"Input from user: {user_input}"
 
         try:
-            result = tavily_agent.run(task)
+            result = tavily_team.run(task)
             raw_output = result.content.strip()
-            context.log(f"Agent raw result: {raw_output}")
+            context.log(f"Team raw result: {raw_output}")
 
             # Remove markdown code block markers if present
             cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
@@ -77,7 +97,7 @@ def main(context):
             except json.JSONDecodeError as e:
                 context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
                 return context.res.json({
-                    "error": "Agent returned invalid JSON",
+                    "error": "Team returned invalid JSON",
                     "raw": cleaned_output
                 }, 500)
 
