@@ -1,4 +1,3 @@
-import asyncio
 import os
 import re
 import json
@@ -24,7 +23,7 @@ tavily_agent = Agent(
     tools=[crawl_toolkit, extract_toolkit, search_toolkit],
 )
 
-def main(context):
+async def main(context):
     try:
         body = json.loads(context.req.body or "{}")
         user_input = body.get("input")
@@ -43,15 +42,8 @@ def main(context):
         - Example: {{"foo": "bar"}}
         """
 
-        async def run_agent():
-            return await tavily_agent.run(task)
-
-        async def main_async():
-            result = await run_agent()
-            return result.content.strip()
-
-        loop = asyncio.get_event_loop()
-        raw_output = loop.run_until_complete(main_async())
+        result = await tavily_agent.run(task)
+        raw_output = result.content.strip()
         context.log(f"Agent raw result: {raw_output}")
 
         # Remove markdown code block markers if present
@@ -72,10 +64,6 @@ def main(context):
             "status": "success",
             "result": response_data
         })
-
-    except Exception as e:
-        context.error(f"Exception: {str(e)}")
-        return context.res.json({"error": str(e)}, 500)
 
     except Exception as e:
         context.error(f"Exception: {str(e)}")
