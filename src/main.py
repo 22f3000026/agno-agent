@@ -1,92 +1,51 @@
 import os
 import re
 import json
-import asyncio
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from .tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
-from agno.team import Team
 
 TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
 
-# Setup toolkits
+# Setup agent + toolkits
 crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
 extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
 search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 
-# Create specialized agents for each toolkit
-crawl_agent = Agent(
-    name="Tavily Crawl Agent",
+tavily_agent = Agent(
+    name="Tavily Agent",
     role=(
-        "You are a specialized web crawler that helps users traverse websites like a graph starting from a base URL. "
-        "Your job is to handle requests for crawling websites and following links to gather comprehensive content. "
-        "You must return ONLY the tool's JSON output without any additional text or explanation."
+        "You are a smart Tavily assistant. "
+        "Decide between crawl, extract, or search based on user input. "
+        "Return only the tool's JSON string output."
     ),
     model=OpenAIChat(id="gpt-4o"),
-    tools=[crawl_toolkit],
+    tools=[crawl_toolkit, extract_toolkit, search_toolkit],
 )
 
-extract_agent = Agent(
-    name="Tavily Extract Agent",
-    role=(
-        "You are a specialized data extractor that helps users get content from one or more specified URLs. "
-        "Your job is to handle requests for extracting specific content from web pages without following links. "
-        "You must return ONLY the tool's JSON output without any additional text or explanation."
-    ),
-    model=OpenAIChat(id="gpt-4o"),
-    tools=[extract_toolkit],
-)
-
-search_agent = Agent(
-    name="Tavily Search Agent",
-    role=(
-        "You are a specialized search assistant that helps users find information about topics. "
-        "Your job is to handle search queries and questions about various subjects. "
-        "You must return ONLY the tool's JSON output without any additional text or explanation."
-    ),
-    model=OpenAIChat(id="gpt-4o"),
-    tools=[search_toolkit],
-)
-
-# Create the team with specialized agents
-tavily_team = Team(
-    name="Tavily Team",
-    mode="route",
-    model=OpenAIChat("gpt-4o"),
-    members=[crawl_agent, extract_agent, search_agent],
-    show_tool_calls=True,
-    markdown=True,
-    description="You are a smart router that directs web-related requests to the appropriate specialized agent.",
-    instructions=[
-        "Route the request based on these simple rules:",
-        "1. If the input contains the word 'crawl', route to CRAWL agent",
-        "2. If the input contains the word 'extract', route to EXTRACT agent",
-        "3. For all other inputs, route to SEARCH agent",
-        "",
-        "OUTPUT FORMAT:",
-        "- Return ONLY a valid JSON object",
-        "- Use double quotes for all keys and string values",
-        "- Do not include any markdown, explanations, or additional text",
-        "- Example: {\"url\": \"https://example.com\"} for crawl",
-        "- Example: {\"urls\": \"https://example1.com\"} for extract",
-        "- Example: {\"query\": \"machine learning basics\"} for search",
-    ],
-    show_members_responses=True,
-)
-
-async def main(context):
+def main(context):
     try:
         body = json.loads(context.req.body or "{}")
         user_input = body.get("input")
         if not user_input:
             return context.res.json({"error": "Missing 'input' field"}, 400)
 
-        task = f"Input from user: {user_input}"
+        task = f"""
+        Input from user: {user_input}
+
+        INSTRUCTIONS:
+        - If input is a plain URL, use the crawl tool.
+        - If input asks to extract details from a URL, use the extract tool.
+        - If input looks like a search query, use the search tool.
+        - Return only a valid JSON object (no stringified JSON, no markdown, no explanation).
+        - Format keys and strings using double quotes as per JSON spec.
+        - Example: {{"foo": "bar"}}
+        """
 
         try:
-            result = await tavily_team.arun(task)
+            result = tavily_agent.run(task)
             raw_output = result.content.strip()
-            context.log(f"Team raw result: {raw_output}")
+            context.log(f"Agent raw result: {raw_output}")
 
             # Remove markdown code block markers if present
             cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
@@ -98,7 +57,7 @@ async def main(context):
             except json.JSONDecodeError as e:
                 context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
                 return context.res.json({
-                    "error": "Team returned invalid JSON",
+                    "error": "Agent returned invalid JSON",
                     "raw": cleaned_output
                 }, 500)
 
