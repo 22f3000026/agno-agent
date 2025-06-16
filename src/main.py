@@ -46,8 +46,12 @@ def main(context):
         async def run_agent():
             return await tavily_agent.run(task)
 
-        result = asyncio.create_task(run_agent())
-        raw_output = result.result().content.strip()
+        async def main_async():
+            result = await run_agent()
+            return result.content.strip()
+
+        loop = asyncio.get_event_loop()
+        raw_output = loop.run_until_complete(main_async())
         context.log(f"Agent raw result: {raw_output}")
 
         # Remove markdown code block markers if present
