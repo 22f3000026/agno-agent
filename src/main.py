@@ -4,7 +4,7 @@ import re
 import json
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
+from .tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
 
 # Setup agent + toolkits
 crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
