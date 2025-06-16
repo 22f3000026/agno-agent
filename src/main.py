@@ -1,7 +1,7 @@
 import os
+import re
 import json
 from agno.agent import Agent
-from agno.team import Team
 from agno.models.openai import OpenAIChat
 from .tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
 
@@ -14,85 +14,90 @@ search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 
 tavily_agent = Agent(
     name="Tavily Agent",
-    role="Smart Tavily assistant for web content interaction",
+    role=(
+        "You are a smart Tavily assistant that helps users interact with web content in different ways. "
+        "Your job is to analyze the user's input and select the most appropriate tool to handle their request. "
+        "You must return ONLY the tool's JSON output without any additional text or explanation."
+    ),
     model=OpenAIChat(id="gpt-4o"),
     tools=[crawl_toolkit, extract_toolkit, search_toolkit],
-    instructions="""
-    TOOL SELECTION RULES:
-    1. Use CRAWL for single URLs
-    2. Use EXTRACT for multiple URLs
-    3. Use SEARCH for queries
-    4. Return only JSON output
-    """
 )
 
-flashcard_agent = Agent(
-    name="FlashcardGenerator",
-    role="Generates educational flashcards from web content",
-    model=OpenAIChat(id="gpt-4o"),
-    tools=[extract_toolkit],
-    instructions="""
-    FLASHCARD PROTOCOL:
-    1. Extract content using extract tool
-    2. Create cards with:
-       - Front: Clear question/concept
-       - Back: Definition, key points, examples
-    3. Use markdown formatting
-    4. Number each card
-    """,
-    show_tool_calls=True,
-    markdown=True
-)
 
-content_team = Team(
-    name="ContentProcessingTeam",
-    mode="route",
-    model=OpenAIChat(id="gpt-4o"),
-    members=[tavily_agent, flashcard_agent],
-    description="Routes requests between Tavily content processing and flashcard generation",
-    instructions="""
-    ROUTING RULES:
-    1. Route to Tavily Agent when:
-       - User wants to crawl a website
-       - User wants to extract data from URLs
-       - User wants to search the web
-       - User wants raw web content
 
-    2. Route to Flashcard Agent when:
-       - User mentions "flashcard" or "cards"
-       - User wants to study or learn something
-       - User wants educational content
-       - User wants to create study material
-
-    3. Response Format:
-       - Tavily Agent: Return JSON
-       - Flashcard Agent: Return markdown cards
-    """,
-    success_criteria="Correct agent selected, proper format, request handled",
-    show_members_responses=True
-)
-
-async def main(context):
+def main(context):
     try:
-        # Quick input validation
         body = json.loads(context.req.body or "{}")
         user_input = body.get("input")
         if not user_input:
             return context.res.json({"error": "Missing 'input' field"}, 400)
 
-        # Process request
-        result = await content_team.arun(user_input)
-        output = result.content.strip()
+        task = f"""
+        Input from user: {user_input}
 
-        # Handle response based on content type
+        TOOL SELECTION RULES:
+        1. Use the CRAWL tool when:
+           - Input is a single URL (e.g., "https://example.com" or "example.com")
+           - User wants to get the full content of a webpage
+           - Example: "crawl https://example.com" or "get content from example.com"
+
+        2. Use the EXTRACT tool when:
+           - Input contains multiple URLs
+           - User wants to extract specific information from URLs
+           - Example: "extract data from https://example1.com and https://example2.com"
+           - Example: "get details from these sites: example1.com, example2.com"
+
+        3. Use the SEARCH tool when:
+           - Input is a search query or question
+           - User wants to find information about a topic
+           - Example: "what is machine learning?" or "find information about climate change"
+           - Example: "search for latest news about AI"
+
+        OUTPUT FORMAT:
+        - Return ONLY a valid JSON object
+        - Use double quotes for all keys and string values
+        - Do not include any markdown, explanations, or additional text
+        - Example: {{"url": "https://example.com"}} for crawl
+        - Example: {{"urls": ["https://example1.com", "https://example2.com"]}} for extract
+        - Example: {{"query": "machine learning basics"}} for search
+        """
+
         try:
-            if "flashcard" in user_input.lower() or "card" in user_input.lower():
-                return context.res.json({"status": "success", "result": output})
-            else:
-                return context.res.json({"status": "success", "result": json.loads(output)})
-        except json.JSONDecodeError:
-            return context.res.json({"status": "success", "result": output})
+            result = tavily_agent.run(task)
+            raw_output = result.content.strip()
+            context.log(f"Agent raw result: {raw_output}")
+
+            # Remove markdown code block markers if present
+            cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+            context.log(f"Cleaned output: {cleaned_output}")
+
+            # Try parsing
+            try:
+                response_data = json.loads(cleaned_output)
+            except json.JSONDecodeError as e:
+                context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
+                return context.res.json({
+                    "error": "Agent returned invalid JSON",
+                    "raw": cleaned_output
+                }, 500)
+
+            return context.res.json({
+                "status": "success",
+                "result": response_data
+            })
+
+        except Exception as e:
+            error_msg = str(e)
+            context.error(f"Tool execution failed: {error_msg}")
+            return context.res.json({
+                "error": error_msg,
+                "type": "tool_execution_error"
+            }, 500)
 
     except Exception as e:
-        return context.res.json({"error": str(e)}, 500)
+        context.error(f"General exception: {str(e)}")
+        return context.res.json({
+            "error": str(e),
+            "type": "general_error"
+        }, 500)
 
