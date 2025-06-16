@@ -39,16 +39,17 @@ def main(context):
         - If input asks to extract details from a URL, use the extract tool.
         - If input looks like a search query, use the search tool.
         - Return only the tool's JSON string output.
-        - Always respond in valid JSON string format (double quotes, no comments, no extra text).
+        - Ensure the response is a valid JSON string: use double quotes, no comments, no extra text.
         """
         
         result = asyncio.run(tavily_agent.run(task))
-        context.log(f"Agent raw result: {result.content}")
+        raw_output = result.content.strip()
+        context.log(f"Agent raw result: {raw_output}")
 
-        # Just return the raw output safely wrapped in JSON
+        # Just return the raw response *as a string*
         return context.res.json({
             "status": "success",
-            "raw_response": result.content
+            "raw_response": raw_output
         })
 
     except Exception as e:
