@@ -21,7 +21,7 @@ tavily_agent = Agent(
         "Return only the tool's JSON string output."
     ),
     model=OpenAIChat(id="gpt-4o"),
-    toolkits=[crawl_toolkit, extract_toolkit, search_toolkit]
+    tools=[crawl_toolkit, extract_toolkit, search_toolkit]
 )
 
 def main(context):
