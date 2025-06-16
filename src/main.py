@@ -39,15 +39,21 @@ def main(context):
         - If input asks to extract details from a URL, use the extract tool.
         - If input looks like a search query, use the search tool.
         - Return only the tool's JSON string output.
+        - Always respond in **valid JSON string** format using double quotes.
         """
-
+        
         result = asyncio.run(tavily_agent.run(task))
-        context.log(f"Agent raw result: {result}")
-
+        context.log(f"Agent raw result: {result.content}")
+        
         try:
             response_data = json.loads(result.content)
-        except json.JSONDecodeError:
-            return context.res.json({"error": "Invalid response format from agent"}, 500)
+        except json.JSONDecodeError as e:
+            context.error(f"JSON decode failed: {str(e)} - Content: {result.content}")
+            return context.res.json({
+                "error": "Agent returned invalid JSON",
+                "raw": result.content
+            }, 500)
+
 
         if isinstance(response_data, dict) and "error" in response_data:
             return context.res.json(response_data, 400)
