@@ -38,18 +38,28 @@ def main(context):
         - If input is a plain URL, use the crawl tool.
         - If input asks to extract details from a URL, use the extract tool.
         - If input looks like a search query, use the search tool.
-        - Return only the tool's JSON string output.
-        - Ensure the response is a valid JSON string: use double quotes, no comments, no extra text.
+        - Return only the tool's JSON string output (no extra text, no explanation).
+        - The JSON must use double quotes on keys/values, no comments, no wrapping text.
         """
-        
+
         result = asyncio.run(tavily_agent.run(task))
         raw_output = result.content.strip()
         context.log(f"Agent raw result: {raw_output}")
 
-        # Just return the raw response *as a string*
+        # Parse once to remove string-encoded JSON
+        try:
+            cleaned = json.loads(raw_output)
+            # cleaned is a dict now
+        except json.JSONDecodeError as e:
+            context.error(f"JSON decode failed: {str(e)} - Content: {raw_output}")
+            return context.res.json({
+                "error": "Agent returned invalid JSON",
+                "raw": raw_output
+            }, 500)
+
         return context.res.json({
             "status": "success",
-            "raw_response": raw_output
+            "result": cleaned
         })
 
     except Exception as e:
