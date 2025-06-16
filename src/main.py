@@ -38,29 +38,37 @@ def main(context):
         - If input is a plain URL, use the crawl tool.
         - If input asks to extract details from a URL, use the extract tool.
         - If input looks like a search query, use the search tool.
-        - Return only the tool's JSON string output (no extra text, no explanation).
-        - The JSON must use double quotes on keys/values, no comments, no wrapping text.
+        - Return only a valid JSON object (no stringified JSON, no markdown, no explanation).
+        - Format keys and strings using double quotes as per JSON spec.
+        - Example: {{"foo": "bar"}}
         """
 
         result = asyncio.run(tavily_agent.run(task))
         raw_output = result.content.strip()
         context.log(f"Agent raw result: {raw_output}")
 
-        # Parse once to remove string-encoded JSON
+        # Remove markdown code block markers if present
+        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+        context.log(f"Cleaned output: {cleaned_output}")
+
+        # Try parsing
         try:
-            cleaned = json.loads(raw_output)
-            # cleaned is a dict now
+            response_data = json.loads(cleaned_output)
         except json.JSONDecodeError as e:
-            context.error(f"JSON decode failed: {str(e)} - Content: {raw_output}")
+            context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
             return context.res.json({
                 "error": "Agent returned invalid JSON",
-                "raw": raw_output
+                "raw": cleaned_output
             }, 500)
 
         return context.res.json({
             "status": "success",
-            "result": cleaned
+            "result": response_data
         })
+
+    except Exception as e:
+        context.error(f"Exception: {str(e)}")
+        return context.res.json({"error": str(e)}, 500)
 
     except Exception as e:
         context.error(f"Exception: {str(e)}")
