@@ -34,7 +34,13 @@ def clean_json_string(s):
     match = re.search(r'(\{.*\})', s, re.DOTALL)
     if match:
         return match.group(1)
-    return s
+    # Fallback: try parsing the raw output directly
+    try:
+        json.loads(s)
+        return s
+    except json.JSONDecodeError:
+        # If all parsing attempts fail, return a default JSON object
+        return '{"error": "Invalid JSON output from agent"}'
 
 def main(context):
     try:
