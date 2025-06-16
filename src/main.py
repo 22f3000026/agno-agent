@@ -43,7 +43,8 @@ def main(context):
         - Example: {{"foo": "bar"}}
         """
 
-        result = asyncio.run(tavily_agent.run(task))
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(tavily_agent.run(task))
         raw_output = result.content.strip()
         context.log(f"Agent raw result: {raw_output}")
 
