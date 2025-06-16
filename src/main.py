@@ -3,6 +3,8 @@ from appwrite.services.users import Users
 from appwrite.exception import AppwriteException
 import os
 import json
+import io
+import sys
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
@@ -15,7 +17,7 @@ funny_agent = Agent(
 )
 
 def main(context):
-    # Initialize Appwrite client (optional use)
+    # Initialize Appwrite client (optional)
     client = (
         Client()
         .set_endpoint(os.environ["APPWRITE_FUNCTION_API_ENDPOINT"])
@@ -25,18 +27,18 @@ def main(context):
 
     users = Users(client)
 
-    # Example log
+    # Example Appwrite SDK usage (optional)
     try:
         response = users.list()
         context.log("Total users: " + str(response["total"]))
     except AppwriteException as err:
         context.error("Could not list users: " + repr(err))
 
-    # Ping check
+    # Ping endpoint
     if context.req.path == "/ping":
         return context.res.text("Pong")
 
-    # Extract prompt
+    # Parse input
     try:
         body = json.loads(context.req.body or "{}")
         prompt = body.get("prompt")
@@ -45,14 +47,24 @@ def main(context):
     except json.JSONDecodeError:
         return context.res.json({"error": "Invalid JSON in request body"}, 400)
 
-    # Generate funny response
+    # Capture printed response
     try:
-        agent_output = funny_agent.response(prompt)
+        buffer = io.StringIO()
+        sys_stdout = sys.stdout
+        sys.stdout = buffer
+
+        funny_agent.print_response(prompt, stream=False)
+
+        sys.stdout = sys_stdout
+        response_text = buffer.getvalue().strip()
+
     except Exception as e:
+        sys.stdout = sys_stdout  # Ensure stdout is reset
         context.error("Funny agent failed: " + repr(e))
         return context.res.json({"error": "Funny agent failed", "details": str(e)}, 500)
 
+    # Return as JSON
     return context.res.json({
         "prompt": prompt,
-        "response": agent_output.content
+        "response": response_text
     })
