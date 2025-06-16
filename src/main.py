@@ -1,7 +1,5 @@
 import os
-import re
 import json
-import asyncio
 from agno.agent import Agent
 from agno.team import Team
 from agno.models.openai import OpenAIChat
@@ -16,39 +14,15 @@ search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 
 tavily_agent = Agent(
     name="Tavily Agent",
-    role=(
-        "You are a smart Tavily assistant that helps users interact with web content in different ways. "
-        "Your job is to analyze the user's input and select the most appropriate tool to handle their request. "
-        "You must return ONLY the tool's JSON output without any additional text or explanation.\n\n"
-    ),
+    role="Smart Tavily assistant for web content interaction",
     model=OpenAIChat(id="gpt-4o"),
     tools=[crawl_toolkit, extract_toolkit, search_toolkit],
     instructions="""
     TOOL SELECTION RULES:
-    1. Use the CRAWL tool when:
-       - Input is a single URL (e.g., 'https://example.com' or 'example.com')
-       - User wants to get the full content of a webpage
-       - Example: 'crawl https://example.com' or 'get content from example.com'
-
-    2. Use the EXTRACT tool when:
-       - Input contains multiple URLs
-       - User wants to extract specific information from URLs
-       - Example: 'extract data from https://example1.com and https://example2.com'
-       - Example: 'get details from these sites: example1.com, example2.com'
-
-    3. Use the SEARCH tool when:
-       - Input is a search query or question
-       - User wants to find information about a topic
-       - Example: 'what is machine learning?' or 'find information about climate change'
-       - Example: 'search for latest news about AI'
-
-    OUTPUT FORMAT:
-    - Return ONLY a valid JSON object
-    - Use double quotes for all keys and string values
-    - Do not include any markdown, explanations, or additional text
-    - Example: {"url": "https://example.com"} for crawl
-    - Example: {"urls": ["https://example1.com", "https://example2.com"]} for extract
-    - Example: {"query": "machine learning basics"} for search
+    1. Use CRAWL for single URLs
+    2. Use EXTRACT for multiple URLs
+    3. Use SEARCH for queries
+    4. Return only JSON output
     """
 )
 
@@ -58,107 +32,26 @@ flashcard_agent = Agent(
     model=OpenAIChat(id="gpt-4o"),
     tools=[extract_toolkit],
     instructions="""
-    FLASHCARD GENERATION PROTOCOL:
-
-    1. CONTENT EXTRACTION & ORGANIZATION:
-       - Use the extract tool to get content from URLs
-       - Extract key concepts and main ideas from the content
-       - Group related concepts together
-       - Create a logical flow of information
-       - Focus on important facts and relationships
-
-    2. FLASHCARD STRUCTURE:
-       Each flashcard must follow this exact format:
-       ```
-       # Front: [Clear, concise question or concept]
-       
-       ## Back
-       ### Definition
-       [Clear and concise definition or explanation]
-       
-       ### Key Points
-       - [Point 1]
-       - [Point 2]
-       - [Point 3]
-       
-       ### Examples
-       - [Example 1]
-       - [Example 2]
-       
-       ### Additional Context
-       [Any relevant context or connections to other concepts]
-       ```
-
-    3. QUALITY REQUIREMENTS:
-       - Front must be a clear, specific question or concept
-       - Back must contain comprehensive but concise information
-       - Include real-world examples
-       - Use bullet points for better readability
-       - Maintain consistent formatting
-       - Ensure each card is self-contained
-       - Number each card (e.g., "Card 1:", "Card 2:", etc.)
-
-    4. CONTENT GUIDELINES:
-       - Use active voice
-       - Keep language simple and clear
-       - Include practical applications
-       - Add relevant context
-       - Connect related concepts
-       - Use markdown formatting for structure
-
-    5. OUTPUT FORMAT:
-       - Each card must start with "Card X:" followed by the front
-       - Front must be prefixed with "Front:"
-       - Back must be prefixed with "Back:"
-       - Use ### for subsections within the back
-       - Use bullet points for lists
-       - Separate cards with blank lines
-       - Include at least 5-10 cards per topic
-       - Ensure proper markdown formatting
-
-    6. EXAMPLE FORMAT:
-       ```
-       Card 1:
-       Front: What is photosynthesis?
-       
-       Back:
-       ### Definition
-       The process by which plants convert light energy into chemical energy
-       
-       ### Key Points
-       - Occurs in chloroplasts
-       - Requires sunlight, water, and CO2
-       - Produces glucose and oxygen
-       
-       ### Examples
-       - Green leaves in sunlight
-       - Algae in water
-       
-       ### Additional Context
-       Essential for life on Earth as it produces oxygen and food
-       ```
-
-    7. EXTRACTION WORKFLOW:
-       - First, use the extract tool to get content from the provided URL(s)
-       - Process the extracted content to identify key concepts
-       - Generate flashcards based on the extracted information
-       - Ensure all content is properly attributed to the source
-       - Maintain the original context while creating flashcards
+    FLASHCARD PROTOCOL:
+    1. Extract content using extract tool
+    2. Create cards with:
+       - Front: Clear question/concept
+       - Back: Definition, key points, examples
+    3. Use markdown formatting
+    4. Number each card
     """,
     show_tool_calls=True,
     markdown=True
 )
 
-# Coordinated Team for Content Processing
 content_team = Team(
     name="ContentProcessingTeam",
     mode="route",
     model=OpenAIChat(id="gpt-4o"),
     members=[tavily_agent, flashcard_agent],
-    description="Routes requests between Tavily content processing and flashcard generation based on user needs",
+    description="Routes requests between Tavily content processing and flashcard generation",
     instructions="""
     ROUTING RULES:
-
     1. Route to Tavily Agent when:
        - User wants to crawl a website
        - User wants to extract data from URLs
@@ -175,65 +68,31 @@ content_team = Team(
        - Tavily Agent: Return JSON
        - Flashcard Agent: Return markdown cards
     """,
-    success_criteria="""
-    - Correct agent selected
-    - Proper response format
-    - User request handled
-    """,
+    success_criteria="Correct agent selected, proper format, request handled",
     show_members_responses=True
 )
 
 async def main(context):
     try:
+        # Quick input validation
         body = json.loads(context.req.body or "{}")
         user_input = body.get("input")
-        request_type = body.get("request_type", "content")  # Default to content request
-        
         if not user_input:
             return context.res.json({"error": "Missing 'input' field"}, 400)
 
-        task = f"""
-        Input from user: {user_input}
-        Request type: {request_type}
+        # Process request
+        result = await content_team.arun(user_input)
+        output = result.content.strip()
 
-        Process this input according to the coordination workflow and return the appropriate response.
-        Remember to:
-        - Follow the specific format for each request type
-        - Ensure proper markdown formatting for flashcards
-        - Return JSON for content-only requests
-        - Validate all outputs before returning
-        """
-
-        result = await content_team.arun(task)
-        raw_output = result.content.strip()
-        context.log(f"Team raw result: {raw_output}")
-
-        # Remove markdown code block markers if present
-        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-        context.log(f"Cleaned output: {cleaned_output}")
-
-        # Try parsing if it's a JSON response
-        if request_type == "content":
-            try:
-                response_data = json.loads(cleaned_output)
-            except json.JSONDecodeError as e:
-                context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
-                return context.res.json({
-                    "error": "Team returned invalid JSON",
-                    "raw": cleaned_output
-                }, 500)
-        else:
-            response_data = cleaned_output
-
-        return context.res.json({
-            "status": "success",
-            "result": response_data
-        })
+        # Handle response based on content type
+        try:
+            if "flashcard" in user_input.lower() or "card" in user_input.lower():
+                return context.res.json({"status": "success", "result": output})
+            else:
+                return context.res.json({"status": "success", "result": json.loads(output)})
+        except json.JSONDecodeError:
+            return context.res.json({"status": "success", "result": output})
 
     except Exception as e:
-        context.error(f"Error: {str(e)}")
-        return context.res.json({
-            "error": str(e),
-            "type": "error"
-        }, 500)
+        return context.res.json({"error": str(e)}, 500)
 
