@@ -2,38 +2,57 @@ from appwrite.client import Client
 from appwrite.services.users import Users
 from appwrite.exception import AppwriteException
 import os
+import json
 
-# This Appwrite function will be executed every time your function is triggered
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+
+# Create the funny agent
+funny_agent = Agent(
+    name="Funny Agent",
+    role="You always reply in a funny, witty, or silly way. Your job is to make people smile while still answering their question.",
+    model=OpenAIChat(id="gpt-4o")
+)
+
 def main(context):
-    # You can use the Appwrite SDK to interact with other services
-    # For this example, we're using the Users service
+    # Initialize Appwrite client (optional use)
     client = (
         Client()
         .set_endpoint(os.environ["APPWRITE_FUNCTION_API_ENDPOINT"])
         .set_project(os.environ["APPWRITE_FUNCTION_PROJECT_ID"])
         .set_key(context.req.headers["x-appwrite-key"])
     )
+
     users = Users(client)
 
+    # Example log
     try:
         response = users.list()
-        # Log messages and errors to the Appwrite Console
-        # These logs won't be seen by your end users
         context.log("Total users: " + str(response["total"]))
     except AppwriteException as err:
         context.error("Could not list users: " + repr(err))
 
-    # The req object contains the request data
+    # Ping check
     if context.req.path == "/ping":
-        # Use res object to respond with text(), json(), or binary()
-        # Don't forget to return a response!
         return context.res.text("Pong")
 
-    return context.res.json(
-        {
-            "motto": "Build like a team of hundreds_",
-            "learn": "https://appwrite.io/docs",
-            "connect": "https://appwrite.io/discord",
-            "getInspired": "https://builtwith.appwrite.io",
-        }
-    )
+    # Extract prompt
+    try:
+        body = json.loads(context.req.body or "{}")
+        prompt = body.get("prompt")
+        if not prompt:
+            return context.res.json({"error": "Missing 'prompt' in request body"}, 400)
+    except json.JSONDecodeError:
+        return context.res.json({"error": "Invalid JSON in request body"}, 400)
+
+    # Generate funny response
+    try:
+        agent_output = funny_agent.response(prompt)
+    except Exception as e:
+        context.error("Funny agent failed: " + repr(e))
+        return context.res.json({"error": "Funny agent failed", "details": str(e)}, 500)
+
+    return context.res.json({
+        "prompt": prompt,
+        "response": agent_output.content
+    })
