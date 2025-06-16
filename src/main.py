@@ -23,7 +23,7 @@ tavily_agent = Agent(
     tools=[crawl_toolkit, extract_toolkit, search_toolkit],
 )
 
-async def main(context):
+def main(context):
     try:
         body = json.loads(context.req.body or "{}")
         user_input = body.get("input")
@@ -42,8 +42,8 @@ async def main(context):
         - Example: {{"foo": "bar"}}
         """
 
-        result = await tavily_agent.run(task)
-        raw_output = result.content.strip()
+        result = tavily_agent.run(task)
+        raw_output = result.content.strip() 
         context.log(f"Agent raw result: {raw_output}")
 
         # Remove markdown code block markers if present
