@@ -84,7 +84,7 @@ async def main(context):
         task = f"Input from user: {user_input}"
 
         try:
-            result = await tavily_team.run(task)
+            result = await tavily_team.arun(task)
             raw_output = result.content.strip()
             context.log(f"Team raw result: {raw_output}")
 
