@@ -24,24 +24,6 @@ tavily_agent = Agent(
     tools=[crawl_toolkit, extract_toolkit, search_toolkit],
 )
 
-def clean_json_string(s):
-    # Remove markdown code block markers
-    s = re.sub(r'^```json|^```|```$', '', s, flags=re.MULTILINE).strip()
-    # Replace single quotes with double quotes (only for keys and string values)
-    s = re.sub(r"'([^']*)':", r'"\1":', s)
-    s = re.sub(r":\s*'([^']*)'", r':"\1"', s)
-    # Try to extract a JSON object using regex
-    match = re.search(r'(\{.*\})', s, re.DOTALL)
-    if match:
-        return match.group(1)
-    # Fallback: try parsing the raw output directly
-    try:
-        json.loads(s)
-        return s
-    except json.JSONDecodeError:
-        # If all parsing attempts fail, return a default JSON object
-        return '{"error": "Invalid JSON output from agent"}'
-
 def main(context):
     try:
         body = json.loads(context.req.body or "{}")
@@ -64,8 +46,12 @@ def main(context):
         result = asyncio.run(tavily_agent.run(task))
         raw_output = result.content.strip()
         context.log(f"Agent raw result: {raw_output}")
-        cleaned_output = clean_json_string(raw_output)
+
+        # Remove markdown code block markers if present
+        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
         context.log(f"Cleaned output: {cleaned_output}")
+
+        # Try parsing
         try:
             response_data = json.loads(cleaned_output)
         except json.JSONDecodeError as e:

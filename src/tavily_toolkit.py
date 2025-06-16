@@ -25,9 +25,15 @@ class TavilyExtractToolkit(Toolkit):
         self.client = TavilyClient(api_key)
         self.register(self.extract_data)
 
-    def extract_data(self, urls: list) -> str:
+    def extract_data(self, urls: list[str]) -> str:
         """
         Extract data from a list of URLs using Tavily API and return as JSON string.
+        
+        Args:
+            urls: List of URLs to extract data from
+            
+        Returns:
+            JSON string containing extracted data
         """
         try:
             response = self.client.extract(urls=urls)
