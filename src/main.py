@@ -3,13 +3,11 @@ from appwrite.services.users import Users
 from appwrite.exception import AppwriteException
 import os
 import json
-import io
-import sys
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 
-# Funny agent setup
+# Create funny agent
 funny_agent = Agent(
     name="Funny Agent",
     role="You always reply in a funny, witty, or silly way. Your job is to make people smile while still answering their question.",
@@ -44,22 +42,12 @@ def main(context):
         return context.res.json({"error": "Invalid JSON in request body"}, 400)
 
     try:
-        # capture printed output
-        buffer = io.StringIO()
-        sys_stdout = sys.stdout
-        sys.stdout = buffer
-
-        funny_agent.print_response(prompt, stream=False)
-
-        sys.stdout = sys_stdout
-        response_text = buffer.getvalue().strip()
-
+        agent_output = funny_agent.chat(prompt)
     except Exception as e:
-        sys.stdout = sys_stdout
         context.error("Funny agent failed: " + repr(e))
         return context.res.json({"error": "Funny agent failed", "details": str(e)}, 500)
 
     return context.res.json({
         "prompt": prompt,
-        "response": response_text
+        "response": agent_output.content
     })
