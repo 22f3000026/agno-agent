@@ -21,7 +21,7 @@ tavily_agent = Agent(
         "Return only the tool's JSON string output."
     ),
     model=OpenAIChat(id="gpt-4o"),
-    tools=[crawl_toolkit, extract_toolkit, search_toolkit]
+    tools=[crawl_toolkit, extract_toolkit, search_toolkit],
 )
 
 def main(context):
@@ -42,6 +42,7 @@ def main(context):
         """
 
         result = tavily_agent.run(task)
+        context.log(result)
 
         try:
             response_data = json.loads(result.content)
