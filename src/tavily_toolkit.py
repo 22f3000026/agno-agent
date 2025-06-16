@@ -2,6 +2,7 @@ from agno.tools import Toolkit
 from tavily import TavilyClient
 import json
 import time
+import asyncio
 from typing import Optional
 
 class TavilyCrawlToolkit(Toolkit):
@@ -12,7 +13,7 @@ class TavilyCrawlToolkit(Toolkit):
         self.timeout = timeout
         self.register(self.crawl_page)
 
-    def crawl_page(self, url: str) -> str:
+    async def crawl_page(self, url: str) -> str:
         """
         Crawl a URL using Tavily API and return the crawl data as JSON string.
         
@@ -26,12 +27,16 @@ class TavilyCrawlToolkit(Toolkit):
             try:
                 if not url.startswith(('http://', 'https://')):
                     url = 'https://' + url
-                response = self.client.crawl(url=url, timeout=self.timeout)
+                response = await asyncio.to_thread(
+                    self.client.crawl,
+                    url=url,
+                    timeout=self.timeout
+                )
                 return json.dumps(response)
             except Exception as e:
                 if attempt == self.max_retries - 1:
                     raise Exception(f"Tavily crawl failed after {self.max_retries} attempts: {str(e)}")
-                time.sleep(1)  # Wait before retrying
+                await asyncio.sleep(1)  # Wait before retrying
 
 
 class TavilyExtractToolkit(Toolkit):
@@ -42,7 +47,7 @@ class TavilyExtractToolkit(Toolkit):
         self.timeout = timeout
         self.register(self.extract_data)
 
-    def extract_data(self, urls: str) -> str:
+    async def extract_data(self, urls: str) -> str:
         """
         Extract data from a URL using Tavily API and return as JSON string.
         
@@ -56,12 +61,16 @@ class TavilyExtractToolkit(Toolkit):
             try:
                 if not urls.startswith(('http://', 'https://')):
                     urls = 'https://' + urls
-                response = self.client.extract(urls=[urls], timeout=self.timeout)
+                response = await asyncio.to_thread(
+                    self.client.extract,
+                    urls=[urls],
+                    timeout=self.timeout
+                )
                 return json.dumps(response)
             except Exception as e:
                 if attempt == self.max_retries - 1:
                     raise Exception(f"Tavily extract failed after {self.max_retries} attempts: {str(e)}")
-                time.sleep(1)  # Wait before retrying
+                await asyncio.sleep(1)  # Wait before retrying
 
 
 class TavilySearchToolkit(Toolkit):
@@ -72,7 +81,7 @@ class TavilySearchToolkit(Toolkit):
         self.timeout = timeout
         self.register(self.search_query)
 
-    def search_query(self, query: str) -> str:
+    async def search_query(self, query: str) -> str:
         """
         Perform a search using Tavily API and return search results as JSON string.
         
@@ -86,9 +95,13 @@ class TavilySearchToolkit(Toolkit):
             try:
                 if not query or not query.strip():
                     raise ValueError("Search query cannot be empty")
-                response = self.client.search(query=query.strip(), timeout=self.timeout)
+                response = await asyncio.to_thread(
+                    self.client.search,
+                    query=query.strip(),
+                    timeout=self.timeout
+                )
                 return json.dumps(response)
             except Exception as e:
                 if attempt == self.max_retries - 1:
                     raise Exception(f"Tavily search failed after {self.max_retries} attempts: {str(e)}")
-                time.sleep(1)  # Wait before retrying
+                await asyncio.sleep(1)  # Wait before retrying

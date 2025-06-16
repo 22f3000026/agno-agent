@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from .tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
@@ -73,7 +74,7 @@ tavily_team = Team(
     show_members_responses=True,
 )
 
-def main(context):
+async def main(context):
     try:
         body = json.loads(context.req.body or "{}")
         user_input = body.get("input")
@@ -83,7 +84,7 @@ def main(context):
         task = f"Input from user: {user_input}"
 
         try:
-            result = tavily_team.run(task)
+            result = await tavily_team.run(task)
             raw_output = result.content.strip()
             context.log(f"Team raw result: {raw_output}")
 
