@@ -157,53 +157,41 @@ content_team = Team(
     members=[tavily_agent, flashcard_agent],
     description="Routes requests between Tavily content processing and flashcard generation based on user needs",
     instructions="""
-    ROUTING WORKFLOW:
+    ROUTING RULES:
 
-    1. REQUEST ANALYSIS:
-       Route to Tavily Agent when:
-       - Input is a single URL to crawl
-       - Input contains multiple URLs to extract from
-       - Input is a search query
-       - User wants raw web content or search results
-       Examples:
-       - "crawl https://example.com"
-       - "extract from https://site1.com and https://site2.com"
-       - "search for machine learning basics"
+    1. Route to Tavily Agent when:
+       - User wants to crawl a website
+       - User wants to extract data from URLs
+       - User wants to search the web
+       - User wants raw web content
 
-       Route to Flashcard Agent when:
-       - Input contains "flashcard" or "cards"
-       - User wants to learn or study a topic
-       - Input is educational content
-       - User wants structured learning material
-       Examples:
-       - "create flashcards about photosynthesis"
-       - "generate study cards from this URL: example.com"
-       - "make flashcards about machine learning"
+    2. Route to Flashcard Agent when:
+       - User mentions "flashcard" or "cards"
+       - User wants to study or learn something
+       - User wants educational content
+       - User wants to create study material
 
-    2. ROUTING RULES:
-       - If input contains URLs and "flashcard"/"cards" → Flashcard Agent
-       - If input is a search query and "flashcard"/"cards" → Flashcard Agent
-       - If input is just URLs or search → Tavily Agent
-       - If input is unclear, ask for clarification
-
-    3. RESPONSE HANDLING:
-       - Tavily Agent: Return JSON response
-       - Flashcard Agent: Return markdown-formatted cards
-       - Maintain consistent error handling
-       - Ensure proper formatting for each agent type
+    3. Response Format:
+       - Tavily Agent: Return JSON
+       - Flashcard Agent: Return markdown cards
     """,
     success_criteria="""
-    - Correct agent selected based on input
-    - Appropriate response format maintained
-    - Clear routing decisions
-    - Proper error handling
-    - User intent satisfied
+    - Correct agent selected
+    - Proper response format
+    - User request handled
     """,
     show_members_responses=True
 )
 
-async def process_request(context, user_input, request_type):
+async def main(context):
     try:
+        body = json.loads(context.req.body or "{}")
+        user_input = body.get("input")
+        request_type = body.get("request_type", "content")  # Default to content request
+        
+        if not user_input:
+            return context.res.json({"error": "Missing 'input' field"}, 400)
+
         task = f"""
         Input from user: {user_input}
         Request type: {request_type}
@@ -243,35 +231,9 @@ async def process_request(context, user_input, request_type):
         })
 
     except Exception as e:
-        error_msg = str(e)
-        context.error(f"Team execution failed: {error_msg}")
-        return context.res.json({
-            "error": error_msg,
-            "type": "team_execution_error"
-        }, 500)
-
-def main(context):
-    try:
-        body = json.loads(context.req.body or "{}")
-        user_input = body.get("input")
-        request_type = body.get("request_type", "content")  # Default to content request
-        
-        if not user_input:
-            return context.res.json({"error": "Missing 'input' field"}, 400)
-
-        # Create event loop and run async function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(process_request(context, user_input, request_type))
-            return result
-        finally:
-            loop.close()
-
-    except Exception as e:
-        context.error(f"General exception: {str(e)}")
+        context.error(f"Error: {str(e)}")
         return context.res.json({
             "error": str(e),
-            "type": "general_error"
+            "type": "error"
         }, 500)
 
