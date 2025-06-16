@@ -9,7 +9,7 @@ import sys
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 
-# Define your funny agent
+# Define the funny agent
 funny_agent = Agent(
     name="Funny Agent",
     role="You always reply in a funny, witty, or silly way. Your job is to make people smile while still answering their question.",
@@ -27,7 +27,7 @@ def main(context):
 
     users = Users(client)
 
-    # Log users (this won't mix with agent output as it's before capture)
+    # Appwrite example log
     try:
         response = users.list()
         context.log(f"Total users: {response['total']}")
@@ -37,7 +37,7 @@ def main(context):
     if context.req.path == "/ping":
         return context.res.text("Pong")
 
-    # Parse JSON input
+    # Parse input
     try:
         body = json.loads(context.req.body or "{}")
         prompt = body.get("prompt")
@@ -46,7 +46,7 @@ def main(context):
     except json.JSONDecodeError:
         return context.res.json({"error": "Invalid JSON in request body"}, 400)
 
-    # Capture ONLY the funny agent's output
+    # Capture and log agent output
     try:
         buffer = io.StringIO()
         sys_stdout = sys.stdout
@@ -57,12 +57,15 @@ def main(context):
         sys.stdout = sys_stdout
         response_text = buffer.getvalue().strip()
 
+        # Log the captured output
+        context.log(f"Funny agent output: {response_text}")
+
     except Exception as e:
         sys.stdout = sys_stdout
         context.error(f"Funny agent failed: {repr(e)}")
         return context.res.json({"error": "Funny agent failed", "details": str(e)}, 500)
 
-    # Return clean JSON
+    # Return JSON response
     return context.res.json({
         "prompt": prompt,
         "response": response_text
