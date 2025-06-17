@@ -90,23 +90,49 @@ class TavilyExtractToolkit(Toolkit):
 class TavilySearchToolkit(Toolkit):
     def __init__(self, api_key: str):
         super().__init__(name="tavily_search_toolkit")
-        self.client = TavilyClient(api_key)
+        self.api_key = api_key
         self.register(self.search_query)
 
     def search_query(self, query: str) -> str:
         """
-        Perform a search using Tavily API and return search results as JSON string.
-        
+        Perform a search using Tavily API with custom options and return results as JSON string.
+
         Args:
             query: The search query string
-            
+
         Returns:
             JSON string containing search results
         """
         try:
             if not query or not query.strip():
                 raise ValueError("Search query cannot be empty")
-            response = self.client.search(query=query.strip())
-            return json.dumps(response)
+
+            payload = {
+                "query": query.strip(),
+                "topic": "general",
+                "search_depth": "basic",
+                "chunks_per_source": 3,
+                "max_results": 1,
+                "time_range": None,
+                "days": 7,
+                "include_answer": True,
+                "include_raw_content": True,
+                "include_images": False,
+                "include_image_descriptions": False,
+                "include_domains": [],
+                "exclude_domains": [],
+                "country": None
+            }
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            response = requests.post("https://api.tavily.com/search", json=payload, headers=headers)
+            response.raise_for_status()
+
+            return json.dumps(response.json())
+
         except Exception as e:
             raise Exception(f"Tavily search failed: {str(e)}")
