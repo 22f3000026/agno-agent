@@ -46,8 +46,16 @@ class TavilyExtractToolkit(Toolkit):
         try:
             # Ensure URLs have proper protocol
             processed_urls = [url if url.startswith(('http://', 'https://')) else 'https://' + url for url in urls]
-            response = self.client.extract(urls=processed_urls)
+
+            response = self.client.extract(
+                urls=processed_urls,
+                include_images=False,
+                extract_depth="basic",
+                format="markdown"
+            )
+
             return json.dumps(response)
+
         except Exception as e:
             raise Exception(f"Tavily extract failed: {str(e)}")
 
