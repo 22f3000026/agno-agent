@@ -36,7 +36,6 @@ flashcard_agent = Agent(
 )
 
 def generate_flashcards(extracted_content: str, context):
-    # Ask GPT to create flashcards
     task = f"""
     Extracted content:
     {extracted_content}
@@ -47,7 +46,6 @@ def generate_flashcards(extracted_content: str, context):
     - Return as JSON: {{"flashcards": [{{"question": "...", "answer": "..."}}]}}
     - Do not include explanations or markdown code blocks.
     """
-
     result = flashcard_agent.run(task)
     raw_output = result.content.strip()
     context.log(f"Flashcard agent raw result: {raw_output}")
@@ -61,6 +59,9 @@ def generate_flashcards(extracted_content: str, context):
         context.error(f"Flashcard JSON decode failed: {str(e)} - Content: {cleaned_output}")
         return {"error": "Invalid flashcard JSON", "raw": cleaned_output}
 
+def is_valid_url(url):
+    return re.match(r"^https?://", url) or re.match(r"^[\w\.-]+\.[a-z]{2,}", url)
+
 def main(context):
     try:
         body = json.loads(context.req.body or "{}")
@@ -69,45 +70,44 @@ def main(context):
 
         if not user_input:
             return context.res.json({"error": "Missing 'input' field"}, 400)
-    
-    if mode == "flashcard":
-        if not is_valid_url(user_input):
-            return context.res.json({
-                "error": "Flashcard mode requires a valid URL."
-            }, 400)
-    
-        # Ensure https
-        if not user_input.startswith(('http://', 'https://')):
-            user_input = 'https://' + user_input
-    
-        context.log(f"Running extract for flashcard mode on: {user_input}")
-        try:
-            extracted_json_str = extract_toolkit.extract_data([user_input])
-            extracted_data = json.loads(extracted_json_str)
-            extracted_content = extracted_data.get("content", "")
-    
-            if not extracted_content:
+
+        if mode == "flashcard":
+            if not is_valid_url(user_input):
                 return context.res.json({
-                    "error": "No content extracted from URL"
+                    "error": "Flashcard mode requires a valid URL."
+                }, 400)
+
+            if not user_input.startswith(('http://', 'https://')):
+                user_input = 'https://' + user_input
+
+            context.log(f"Running extract for flashcard mode on: {user_input}")
+
+            try:
+                extracted_json_str = extract_toolkit.extract_data([user_input])
+                extracted_data = json.loads(extracted_json_str)
+                extracted_content = extracted_data.get("content", "")
+
+                if not extracted_content:
+                    return context.res.json({
+                        "error": "No content extracted from URL"
+                    }, 500)
+
+                flashcards = generate_flashcards(extracted_content, context)
+                return context.res.json({
+                    "status": "success",
+                    "flashcards": flashcards
+                })
+
+            except Exception as e:
+                error_msg = str(e)
+                context.error(f"Flashcard mode failed: {error_msg}")
+                return context.res.json({
+                    "error": error_msg,
+                    "type": "flashcard_error"
                 }, 500)
-    
-            flashcards = generate_flashcards(extracted_content, context)
-            return context.res.json({
-                "status": "success",
-                "flashcards": flashcards
-            })
-
-        except Exception as e:
-            error_msg = str(e)
-            context.error(f"Flashcard mode failed: {error_msg}")
-            return context.res.json({
-                "error": error_msg,
-                "type": "flashcard_error"
-            }, 500)
-
 
         else:
-            # Default tavily agent logic
+            # Default Tavily agent logic
             task = f"""
             Input from user: {user_input}
 
@@ -119,14 +119,20 @@ def main(context):
             - Format keys and strings using double quotes as per JSON spec.
             """
 
-            result = tavily_agent.run(task)
-            raw_output = result.content.strip()
-            context.log(f"Agent raw result: {raw_output}")
-
-            cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-
             try:
+                result = tavily_agent.run(task)
+                raw_output = result.content.strip()
+                context.log(f"Agent raw result: {raw_output}")
+
+                cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+
                 response_data = json.loads(cleaned_output)
+
+                return context.res.json({
+                    "status": "success",
+                    "result": response_data
+                })
+
             except json.JSONDecodeError as e:
                 context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
                 return context.res.json({
@@ -134,10 +140,13 @@ def main(context):
                     "raw": cleaned_output
                 }, 500)
 
-            return context.res.json({
-                "status": "success",
-                "result": response_data
-            })
+            except Exception as e:
+                error_msg = str(e)
+                context.error(f"Tool execution failed: {error_msg}")
+                return context.res.json({
+                    "error": error_msg,
+                    "type": "tool_execution_error"
+                }, 500)
 
     except Exception as e:
         context.error(f"General exception: {str(e)}")
