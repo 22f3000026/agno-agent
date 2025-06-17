@@ -97,13 +97,13 @@ def main(context):
                 "flashcards": flashcards
             })
 
-    except Exception as e:
-        error_msg = str(e)
-        context.error(f"Flashcard mode failed: {error_msg}")
-        return context.res.json({
-            "error": error_msg,
-            "type": "flashcard_error"
-        }, 500)
+        except Exception as e:
+            error_msg = str(e)
+            context.error(f"Flashcard mode failed: {error_msg}")
+            return context.res.json({
+                "error": error_msg,
+                "type": "flashcard_error"
+            }, 500)
 
 
         else:
