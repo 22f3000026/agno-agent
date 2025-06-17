@@ -69,34 +69,42 @@ def main(context):
 
         if not user_input:
             return context.res.json({"error": "Missing 'input' field"}, 400)
-
-        if mode == "flashcard":
-            # Run extract toolkit directly
-            context.log(f"Running extract for flashcard mode on: {user_input}")
-            try:
-                extracted_json_str = extract_toolkit.extract_data([user_input])
-                extracted_data = json.loads(extracted_json_str)
-                extracted_content = extracted_data.get("content", "")
-
-                if not extracted_content:
-                    return context.res.json({
-                        "error": "No content extracted from URL"
-                    }, 500)
-
-                # Generate flashcards from extracted content
-                flashcards = generate_flashcards(extracted_content, context)
+    
+    if mode == "flashcard":
+        if not is_valid_url(user_input):
+            return context.res.json({
+                "error": "Flashcard mode requires a valid URL."
+            }, 400)
+    
+        # Ensure https
+        if not user_input.startswith(('http://', 'https://')):
+            user_input = 'https://' + user_input
+    
+        context.log(f"Running extract for flashcard mode on: {user_input}")
+        try:
+            extracted_json_str = extract_toolkit.extract_data([user_input])
+            extracted_data = json.loads(extracted_json_str)
+            extracted_content = extracted_data.get("content", "")
+    
+            if not extracted_content:
                 return context.res.json({
-                    "status": "success",
-                    "flashcards": flashcards
-                })
-
-            except Exception as e:
-                error_msg = str(e)
-                context.error(f"Flashcard mode failed: {error_msg}")
-                return context.res.json({
-                    "error": error_msg,
-                    "type": "flashcard_error"
+                    "error": "No content extracted from URL"
                 }, 500)
+    
+            flashcards = generate_flashcards(extracted_content, context)
+            return context.res.json({
+                "status": "success",
+                "flashcards": flashcards
+            })
+
+    except Exception as e:
+        error_msg = str(e)
+        context.error(f"Flashcard mode failed: {error_msg}")
+        return context.res.json({
+            "error": error_msg,
+            "type": "flashcard_error"
+        }, 500)
+
 
         else:
             # Default tavily agent logic
