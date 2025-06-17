@@ -5,24 +5,51 @@ import json
 class TavilyCrawlToolkit(Toolkit):
     def __init__(self, api_key: str):
         super().__init__(name="tavily_crawl_toolkit")
-        self.client = TavilyClient(api_key)
+        self.api_key = api_key  # Save API key for direct request
         self.register(self.crawl_page)
 
     def crawl_page(self, url: str) -> str:
         """
-        Crawl a URL using Tavily API and return the crawl data as JSON string.
-        
+        Crawl a URL using Tavily API with custom options and return crawl data as JSON string.
+
         Args:
             url: The URL to crawl
-            
+
         Returns:
             JSON string containing crawled data
         """
         try:
+            # Ensure URL has proper protocol
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
-            response = self.client.crawl(url=url)
-            return json.dumps(response)
+
+            payload = {
+                "url": url,
+                "max_depth": 1,
+                "max_breadth": 20,
+                "limit": 50,
+                "instructions": "Python SDK",
+                "select_paths": None,
+                "select_domains": None,
+                "exclude_paths": None,
+                "exclude_domains": None,
+                "allow_external": False,
+                "include_images": False,
+                "categories": None,
+                "extract_depth": "basic",
+                "format": "markdown"
+            }
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            response = requests.post("https://api.tavily.com/crawl", json=payload, headers=headers)
+            response.raise_for_status()
+
+            return json.dumps(response.json())
+
         except Exception as e:
             raise Exception(f"Tavily crawl failed: {str(e)}")
 
