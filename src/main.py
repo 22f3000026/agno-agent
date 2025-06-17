@@ -1,26 +1,27 @@
 import os
 import re
 import json
-from agno.agent import Agent
+from agno.agent import Agent, Team
 from agno.models.openai import OpenAIChat
 from .tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit
 
+# Get API key
 TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
 
-# Setup toolkits
+# Setup Tavily toolkits
 crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
 extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
 search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 
-# Setup agents
+# Agents
 tavily_agent = Agent(
     name="Tavily Agent",
     role=(
         "You are a smart Tavily assistant. "
-        "Decide between crawl, extract, or search based on user input. "
-        "Return only the tool's JSON string output."
+        "Choose between crawl, extract, or search tools based on the input. "
+        "Always return valid JSON with the tool output. No explanations."
     ),
-    model=OpenAIChat(id="gpt-4o"),
+    model=OpenAIChat("gpt-4o"),
     tools=[crawl_toolkit, extract_toolkit, search_toolkit],
 )
 
@@ -28,128 +29,85 @@ flashcard_agent = Agent(
     name="Flashcard Agent",
     role=(
         "You are a flashcard generator. "
-        "Given extracted content, create a list of flashcards. "
-        "Each flashcard is a JSON object with 'question' and 'answer' fields. "
-        "Return a JSON object with a 'flashcards' array."
+        "Given extracted content, generate 5-10 flashcards as JSON: "
+        '{"flashcards": [{"question": "...", "answer": "..."}]}'
+        "No explanations or markdown. Only valid JSON."
     ),
-    model=OpenAIChat(id="gpt-4o"),
+    model=OpenAIChat("gpt-4o"),
 )
 
-def generate_flashcards(extracted_content: str, context):
-    task = f"""
-    Extracted content:
-    {extracted_content}
-
-    INSTRUCTIONS:
-    - Generate 5-10 flashcards based on this content.
-    - Each flashcard must have a 'question' and 'answer'.
-    - Return as JSON: {{"flashcards": [{{"question": "...", "answer": "..."}}]}}
-    - Do not include explanations or markdown code blocks.
+# Team
+tavily_flashcard_team = Team(
+    name="Tavily Flashcard Team",
+    mode="coordinate",
+    model=OpenAIChat("gpt-4o"),
+    members=[tavily_agent, flashcard_agent],
+    show_members_responses=True,
+    instructions=[
+        "If input looks like a search query, Tavily Agent handles it.",
+        "If input is a URL, Tavily Agent decides whether to crawl or extract.",
+        "If extracted content is available, Flashcard Agent generates flashcards.",
+        "Coordinate so flashcards are generated only after valid content extraction.",
+        "Return final JSON with either a 'result' or 'flashcards' key.",
+        "No markdown, explanations, or extra text — only valid JSON."
+    ],
+    success_criteria="""
+    - Tavily Agent selects the correct tool and returns valid JSON.
+    - Flashcard Agent produces valid flashcard JSON when required.
+    - Final output is valid JSON with 'result' or 'flashcards'.
     """
-    result = flashcard_agent.run(task)
-    raw_output = result.content.strip()
-    context.log(f"Flashcard agent raw result: {raw_output}")
+)
 
-    cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-
-    try:
-        flashcards = json.loads(cleaned_output)
-        return flashcards
-    except json.JSONDecodeError as e:
-        context.error(f"Flashcard JSON decode failed: {str(e)} - Content: {cleaned_output}")
-        return {"error": "Invalid flashcard JSON", "raw": cleaned_output}
-
+# Helper
 def is_valid_url(url):
     return re.match(r"^https?://", url) or re.match(r"^[\w\.-]+\.[a-z]{2,}", url)
 
+# Main handler
 def main(context):
     try:
         body = json.loads(context.req.body or "{}")
         user_input = body.get("input")
-        mode = body.get("mode", "default")  # mode = default | flashcard
 
         if not user_input:
             return context.res.json({"error": "Missing 'input' field"}, 400)
 
-        if mode == "flashcard":
-            if not is_valid_url(user_input):
-                return context.res.json({
-                    "error": "Flashcard mode requires a valid URL."
-                }, 400)
+        # Normalize URL if needed
+        if is_valid_url(user_input) and not user_input.startswith(("http://", "https://")):
+            user_input = "https://" + user_input
 
-            if not user_input.startswith(('http://', 'https://')):
-                user_input = 'https://' + user_input
+        # Build task
+        task = f"""
+        Input: {user_input}
 
-            context.log(f"Running extract for flashcard mode on: {user_input}")
+        GOAL:
+        - Tavily Agent decides how to process input (crawl/extract/search).
+        - If extract succeeds and content is found, Flashcard Agent generates flashcards.
+        - Final JSON must have either 'result' or 'flashcards'.
+        """
 
-            try:
-                extracted_json_str = extract_toolkit.extract_data([user_input])
-                extracted_data = json.loads(extracted_json_str)
-                extracted_content = extracted_data.get("content", "")
+        result = tavily_flashcard_team.run(task)
+        raw_output = result.content.strip()
 
-                if not extracted_content:
-                    return context.res.json({
-                        "error": "No content extracted from URL"
-                    }, 500)
+        # Clean up any code fences (just in case)
+        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+        context.log(f"Team raw output: {cleaned_output}")
 
-                flashcards = generate_flashcards(extracted_content, context)
-                return context.res.json({
-                    "status": "success",
-                    "flashcards": flashcards
-                })
+        # Parse and return
+        response_data = json.loads(cleaned_output)
+        return context.res.json({
+            "status": "success",
+            "output": response_data
+        })
 
-            except Exception as e:
-                error_msg = str(e)
-                context.error(f"Flashcard mode failed: {error_msg}")
-                return context.res.json({
-                    "error": error_msg,
-                    "type": "flashcard_error"
-                }, 500)
-
-        else:
-            # Default Tavily agent logic
-            task = f"""
-            Input from user: {user_input}
-
-            INSTRUCTIONS:
-            - If input is a plain URL, use the crawl tool.
-            - If input asks to extract details from a URL, use the extract tool.
-            - If input looks like a search query, use the search tool.
-            - Return only a valid JSON object (no stringified JSON, no markdown, no explanation).
-            - Format keys and strings using double quotes as per JSON spec.
-            """
-
-            try:
-                result = tavily_agent.run(task)
-                raw_output = result.content.strip()
-                context.log(f"Agent raw result: {raw_output}")
-
-                cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-
-                response_data = json.loads(cleaned_output)
-
-                return context.res.json({
-                    "status": "success",
-                    "result": response_data
-                })
-
-            except json.JSONDecodeError as e:
-                context.error(f"JSON decode failed: {str(e)} - Content: {cleaned_output}")
-                return context.res.json({
-                    "error": "Agent returned invalid JSON",
-                    "raw": cleaned_output
-                }, 500)
-
-            except Exception as e:
-                error_msg = str(e)
-                context.error(f"Tool execution failed: {error_msg}")
-                return context.res.json({
-                    "error": error_msg,
-                    "type": "tool_execution_error"
-                }, 500)
+    except json.JSONDecodeError as e:
+        context.error(f"JSON decode failed: {str(e)}")
+        return context.res.json({
+            "error": "Invalid JSON returned by team",
+            "details": str(e)
+        }, 500)
 
     except Exception as e:
-        context.error(f"General exception: {str(e)}")
+        context.error(f"General error: {str(e)}")
         return context.res.json({
             "error": str(e),
             "type": "general_error"
