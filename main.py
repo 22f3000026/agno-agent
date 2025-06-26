@@ -384,6 +384,10 @@ def validate_storyboard_params(data):
     
     return True, "Valid"
 
+@app.route('/')
+def index():
+    return 'Hello, Railway!'
+
 @app.route('/generate-flashcards', methods=['POST', 'OPTIONS'])
 def generate_flashcards():
     if request.method == 'OPTIONS':
