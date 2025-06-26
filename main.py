@@ -197,11 +197,11 @@ tavily_flashcard_team = Team(
         "Return final JSON with either a 'result' or 'flashcards' key.",
         "No markdown, explanations, or extra text — only valid JSON."
     ],
-    success_criteria="""
-    - Tavily Agent selects the correct tool and returns valid JSON.
-    - Flashcard Agent produces valid flashcard JSON when required.
-    - Final output is valid JSON with 'result' or 'flashcards'.
-    """
+    success_criteria=(
+        "- Tavily Agent selects the correct tool and returns valid JSON.\n"
+        "- Flashcard Agent produces valid flashcard JSON when required.\n"
+        "- Final output is valid JSON with 'result' or 'flashcards'."
+    )
 )
 
 tavily_summary_team = Team(
