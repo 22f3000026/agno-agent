@@ -7,3 +7,4 @@ tavily-python
 elevenlabs>=0.2.0
 requests>=2.25.0
 Pillow>=8.0.0
+gunicorn 
