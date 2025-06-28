@@ -16,6 +16,7 @@ import base64
 from PIL import Image
 import io
 import datetime
+import openai  # Move openai import to top level
 
 # Load environment variables from .env file
 load_dotenv()
@@ -355,18 +356,17 @@ storyboard_team = Team(
     name="Storyboard Generation Team",
     mode="coordinate",
     model=OpenAIChat("gpt-4o"),
-    members=[storyboard_content_agent, image_generation_agent],
+    members=[storyboard_content_agent],  # Remove image_generation_agent to avoid potential issues
     show_members_responses=True,
     instructions=[
         "Storyboard Content Agent creates detailed content with image prompts and supporting text.",
-        "Image Generation Agent creates images for each storyboard scene.",
-        "Coordinate to ensure each storyboard has both image and supporting text.",
-        "Return final JSON with complete storyboard data including images and text.",
+        "Create {number_of_boards} storyboard scenes with clear image prompts and supporting text.",
+        "Return final JSON with complete storyboard data including image prompts and text.",
         "No markdown, explanations, or extra text — only valid JSON."
     ],
     success_criteria="""
     - Content Agent creates detailed storyboard content with clear image prompts.
-    - Image Agent generates high-quality images matching the prompts.
+    - Each storyboard has scene_number, image_prompt, and supporting_text.
     - Final output is valid JSON with complete storyboard data.
     """
 )
@@ -475,7 +475,9 @@ def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_
     Generate image using DALL-E 3 API with consistent art style
     """
     try:
-        import openai
+        # Check if OpenAI API key is available
+        if not OPENAI_API_KEY:
+            raise Exception("OpenAI API key is not configured")
         
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         
@@ -515,6 +517,8 @@ def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_
             "filename": filename
         }
         
+    except ImportError as e:
+        raise Exception(f"OpenAI package not available: {str(e)}")
     except Exception as e:
         raise Exception(f"Image generation failed: {str(e)}")
 
@@ -540,6 +544,10 @@ def validate_storyboard_params(data):
             return False, "number_of_boards must be between 1 and 10"
     except (ValueError, TypeError):
         return False, "number_of_boards must be a valid integer"
+    
+    # Validate skip_images (optional boolean)
+    if 'skip_images' in data and not isinstance(data['skip_images'], bool):
+        return False, "skip_images must be a boolean value"
     
     return True, "Valid"
 
@@ -1014,8 +1022,15 @@ def generate_storyboards():
         """
         
         # Run the storyboard team
-        result = storyboard_team.run(task)
-        raw_output = result.content.strip()
+        try:
+            result = storyboard_team.run(task)
+            raw_output = result.content.strip()
+        except Exception as e:
+            app.logger.error(f"Storyboard team execution failed: {str(e)}")
+            return jsonify({
+                "status": "error",
+                "message": f"Storyboard generation failed: {str(e)}"
+            }), 500
         
         # Clean up any code fences and extract JSON
         cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
@@ -1050,29 +1065,47 @@ def generate_storyboards():
             }
             art_style = art_styles.get(image_type, 'professional illustration style')
         
+        # Check if image generation should be attempted
+        skip_image_generation = data.get('skip_images', False)
+        
         for storyboard in storyboards:
             try:
                 image_prompt = storyboard.get("image_prompt", "")
                 scene_number = storyboard.get("scene_number", 1)
                 
-                if image_prompt:
+                if image_prompt and not skip_image_generation:
                     # Generate image using DALL-E with consistent art style
-                    image_result = generate_image_with_dalle(
-                        prompt=image_prompt,
-                        aspect_ratio="1:1",
-                        art_style=art_style
-                    )
-                    
-                    final_storyboard = {
-                        "scene_number": scene_number,
-                        "image_prompt": image_prompt,
-                        "supporting_text": storyboard.get("supporting_text", ""),
-                        "image_url": image_result["image_url"],
-                        "image_path": image_result["image_path"],
-                        "image_filename": image_result["filename"],
-                        "art_style": art_style
-                    }
+                    try:
+                        image_result = generate_image_with_dalle(
+                            prompt=image_prompt,
+                            aspect_ratio="1:1",
+                            art_style=art_style
+                        )
+                        
+                        final_storyboard = {
+                            "scene_number": scene_number,
+                            "image_prompt": image_prompt,
+                            "supporting_text": storyboard.get("supporting_text", ""),
+                            "image_url": image_result["image_url"],
+                            "image_path": image_result["image_path"],
+                            "image_filename": image_result["filename"],
+                            "art_style": art_style
+                        }
+                    except Exception as img_error:
+                        app.logger.error(f"Image generation failed for scene {scene_number}: {str(img_error)}")
+                        # Fallback to storyboard without image
+                        final_storyboard = {
+                            "scene_number": scene_number,
+                            "image_prompt": image_prompt,
+                            "supporting_text": storyboard.get("supporting_text", ""),
+                            "image_url": None,
+                            "image_path": None,
+                            "image_filename": None,
+                            "art_style": art_style,
+                            "error": f"Image generation failed: {str(img_error)}"
+                        }
                 else:
+                    # Create storyboard without image
                     final_storyboard = {
                         "scene_number": scene_number,
                         "image_prompt": image_prompt,
@@ -1086,8 +1119,8 @@ def generate_storyboards():
                 final_storyboards.append(final_storyboard)
                 
             except Exception as e:
-                app.logger.error(f"Image generation failed for scene {scene_number}: {str(e)}")
-                # Add storyboard without image if generation fails
+                app.logger.error(f"Storyboard processing failed for scene {scene_number}: {str(e)}")
+                # Add storyboard without image if processing fails
                 final_storyboard = {
                     "scene_number": scene_number,
                     "image_prompt": storyboard.get("image_prompt", ""),
@@ -1096,7 +1129,7 @@ def generate_storyboards():
                     "image_path": None,
                     "image_filename": None,
                     "art_style": art_style,
-                    "error": f"Image generation failed: {str(e)}"
+                    "error": f"Processing failed: {str(e)}"
                 }
                 final_storyboards.append(final_storyboard)
         
@@ -1127,6 +1160,46 @@ def generate_storyboards():
         return jsonify({
             "status": "error",
             "message": str(e)
+        }), 500
+
+@app.route('/test-storyboards', methods=['GET'])
+def test_storyboards():
+    """
+    Test endpoint to verify storyboard functionality
+    """
+    try:
+        # Test basic imports
+        import openai
+        from PIL import Image
+        
+        # Test API key
+        if not OPENAI_API_KEY:
+            return jsonify({
+                "status": "error",
+                "message": "OpenAI API key not configured"
+            }), 500
+        
+        # Test directory creation
+        os.makedirs("src/storyboard_generations", exist_ok=True)
+        
+        return jsonify({
+            "status": "success",
+            "message": "Storyboard functionality is ready",
+            "openai_available": True,
+            "pillow_available": True,
+            "api_key_configured": bool(OPENAI_API_KEY),
+            "directory_created": os.path.exists("src/storyboard_generations")
+        })
+        
+    except ImportError as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Missing dependency: {str(e)}"
+        }), 500
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Test failed: {str(e)}"
         }), 500
 
 @app.route('/storyboard-images/<filename>', methods=['GET'])
