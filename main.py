@@ -38,7 +38,8 @@ ALLOWED_ORIGINS = [
     'https://100agent-iota.vercel.app',
     'https://100agent-96s7zmbag-akdeepankars-projects.vercel.app',
     'http://localhost:3000',
-    'https://prospace-4d2a452088b6.herokuapp.com'
+    'https://prospace-4d2a452088b6.herokuapp.com',
+    'https://agno-agent-1-production.up.railway.app'  # Add Railway URL if you're using it
 ]
 
 # Add environment-based origins
@@ -50,14 +51,20 @@ if os.environ.get('FLASK_ENV') == 'development':
         'http://127.0.0.1:3001'
     ])
 
-CORS(app, resources={
-    r"/*": {
-        "origin": ALLOWED_ORIGINS,
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Accept", "Authorization"],
-        "supports_credentials": True
-    }
-})
+# For development, allow all origins if needed
+if os.environ.get('FLASK_ENV') == 'development' or os.environ.get('ALLOW_ALL_ORIGINS') == 'true':
+    CORS(app, 
+         origins="*",
+         methods=["GET", "POST", "OPTIONS"],
+         allow_headers=["Content-Type", "Accept", "Authorization"],
+         supports_credentials=False)  # Set to False when using "*"
+else:
+    # Production CORS configuration
+    CORS(app, 
+         origins=ALLOWED_ORIGINS,
+         methods=["GET", "POST", "OPTIONS"],
+         allow_headers=["Content-Type", "Accept", "Authorization"],
+         supports_credentials=True)
 
 # Get API keys
 TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
@@ -541,7 +548,11 @@ def validate_storyboard_params(data):
 def handle_preflight():
     if request.method == "OPTIONS":
         response = app.make_default_options_response()
-        response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        else:
+            response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Accept, Authorization"
         response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -553,6 +564,9 @@ def after_request(response):
     origin = request.headers.get("Origin")
     if origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
+    else:
+        # For development or if origin is not in allowed list, allow all
+        response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Accept, Authorization"
     response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -570,6 +584,24 @@ def health_check():
         "message": "Server is running",
         "timestamp": str(datetime.datetime.now()),
         "cors_origins": ALLOWED_ORIGINS
+    })
+
+@app.route('/debug-cors', methods=['GET', 'POST', 'OPTIONS'])
+def debug_cors():
+    """Debug endpoint to help troubleshoot CORS issues"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    return jsonify({
+        "status": "success",
+        "message": "CORS debug endpoint",
+        "request_headers": dict(request.headers),
+        "request_method": request.method,
+        "request_origin": request.headers.get("Origin"),
+        "allowed_origins": ALLOWED_ORIGINS,
+        "flask_env": os.environ.get('FLASK_ENV'),
+        "allow_all_origins": os.environ.get('ALLOW_ALL_ORIGINS'),
+        "timestamp": str(datetime.datetime.now())
     })
 
 @app.route('/generate-flashcards', methods=['POST', 'OPTIONS'])
@@ -824,590 +856,3 @@ def generate_notes():
             "status": "error",
             "message": str(e)
         }), 500
-
-@app.route('/generate-quiz', methods=['POST', 'OPTIONS'])
-def generate_quiz():
-    if request.method == 'OPTIONS':
-        return '', 200
-        
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No JSON data provided"
-            }), 400
-            
-        # Accept either url or query
-        url = data.get('url')
-        query = data.get('query')
-        
-        if not url and not query:
-            return jsonify({
-                "status": "error",
-                "message": "Either 'url' or 'query' is required"
-            }), 400
-
-        num_questions = data.get('num_questions', 5)  # Default to 5 questions
-        difficulty = data.get('difficulty', 'medium')  # Default to medium difficulty
-
-        # Validate inputs
-        if url and not is_valid_url(url):
-            return jsonify({
-                "status": "error",
-                "message": "Invalid URL provided"
-            }), 400
-
-        if not isinstance(num_questions, int) or num_questions < 1 or num_questions > 20:
-            return jsonify({
-                "status": "error",
-                "message": "Number of questions must be between 1 and 20"
-            }), 400
-
-        if difficulty not in ['easy', 'medium', 'hard']:
-            return jsonify({
-                "status": "error",
-                "message": "Difficulty must be 'easy', 'medium', or 'hard'"
-            }), 400
-
-        # Normalize URL if needed
-        if url and not url.startswith(("http://", "https://")):
-            url = "https://" + url
-
-        # Build task
-        task = f"""
-        Input: {url if url else query}
-        Input Type: {"URL" if url else "Search Query"}
-        Number of Questions: {num_questions}
-        Difficulty Level: {difficulty}
-
-        GOAL:
-        - If URL is provided, extract content from it
-        - If search query is provided, search for relevant content
-        - Generate a quiz with {num_questions} questions at {difficulty} difficulty
-        - Each question should have 4 options and one correct answer
-        - Return quiz in valid JSON format
-        """
-
-        result, error = safe_team_run(tavily_quiz_team, task)
-        if error:
-            return jsonify(error), 500
-        
-        raw_output = result.content.strip()
-
-        # Clean up any code fences and extract JSON
-        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-        app.logger.info(f"Team raw output: {cleaned_output}")
-
-        # Extract JSON part from the response
-        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
-        if not json_match:
-            return jsonify({
-                "status": "error",
-                "message": "No valid JSON found in response"
-            }), 500
-
-        json_str = json_match.group(1)
-        response_data = json.loads(json_str)
-        
-        # Format the response to match the expected structure
-        return jsonify({
-            "status": "success",
-            "data": {
-                "quiz": response_data.get("quiz", {})
-            }
-        })
-
-    except json.JSONDecodeError as e:
-        app.logger.error(f"JSON decode failed: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": "Invalid JSON returned by team"
-        }), 500
-
-    except Exception as e:
-        app.logger.error(f"General error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-
-@app.route('/audiobook-to-audio', methods=['POST', 'OPTIONS'])
-def audiobook_to_audio():
-    if request.method == 'OPTIONS':
-        return '', 200
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"status": "error", "message": "No JSON data provided"}), 400
-        topic = data.get('topic')
-        style = data.get('style', 'Educational')
-        duration = data.get('duration', '1 minutes')
-        voice_id = data.get('voice_id', 'JBFqnCBsd6RMkjVDRZzb')
-        model_id = data.get('model_id', 'eleven_multilingual_v2')
-        output_format = data.get('output_format', 'mp3_44100_128')
-        
-        if not topic:
-            return jsonify({"status": "error", "message": "'topic' is required"}), 400
-        if style not in ['Educational', 'Conversational', 'Storytelling', 'Interview']:
-            return jsonify({"status": "error", "message": "Invalid style. Choose from Educational, Conversational, Storytelling, Interview."}), 400
-        
-        # Validate topic length to prevent token limit issues
-        is_valid, token_count = validate_token_limit(topic, max_tokens=1000)
-        if not is_valid:
-            return jsonify({
-                "status": "error", 
-                "message": f"Topic too long ({token_count} tokens). Please use a shorter topic.",
-                "error_type": "token_limit"
-            }), 400
-        
-        # Step 1: Generate the script using simple team
-        task = f"""
-        Topic: {topic}
-        Storytelling Style: {style}
-        Duration: {duration}
-        
-        GOAL:
-        - Generate a script for an audiobook in the requested style.
-        - The script must be the correct length for the requested duration (e.g., {duration} of spoken audio, not more or less).
-        - Return the script in valid JSON format: {{"script": "..."}}
-        """
-        
-        result, error = safe_team_run(simple_audiobook_team, task)
-        if error:
-            return jsonify(error), 500
-        
-        raw_output = result.content.strip()
-        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-        app.logger.info(f"Simple Audiobook Team raw output: {cleaned_output}")
-        
-        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
-        if not json_match:
-            app.logger.error("No valid JSON found in response")
-            return jsonify({"status": "error", "message": "No valid JSON found in response"}), 500
-        
-        json_str = json_match.group(1)
-        response_data = json.loads(json_str)
-        script = response_data.get("script", "")
-        
-        if not script:
-            return jsonify({"status": "error", "message": "No script found in response"}), 500
-        
-        # Validate script length
-        is_valid, script_tokens = validate_token_limit(script, max_tokens=15000)
-        if not is_valid:
-            script = truncate_content(script, max_tokens=15000)
-            app.logger.warning(f"Script truncated from {script_tokens} to ~15000 tokens")
-        
-        # Step 2: Generate audio from the script
-        try:
-            filename = f"audiobook_{uuid.uuid4().hex}.mp3"
-            toolkit = ElevenLabsToolkit()
-            audio_result = toolkit.text_to_speech(
-                text=script,
-                voice_id=voice_id,
-                model_id=model_id,
-                output_format=output_format,
-                filename=filename
-            )
-            audio_file = audio_result.get('audio_file')
-            audio_file_name = audio_result.get('audio_file_name')
-            
-            return jsonify({
-                "status": "success",
-                "data": {
-                    "script": script,
-                    "audio_file": audio_file,
-                    "audio_file_name": audio_file_name,
-                    "audio_url": f"/audio/{audio_file_name}"
-                }
-            })
-            
-        except Exception as e:
-            app.logger.error(f"Audio generation error: {str(e)}")
-            return jsonify({
-                "status": "error",
-                "message": f"Audio generation failed: {str(e)}"
-            }), 500
-            
-    except json.JSONDecodeError as e:
-        app.logger.error(f"JSON decode failed: {str(e)}")
-        return jsonify({"status": "error", "message": "Invalid JSON returned by team"}), 500
-    except Exception as e:
-        app.logger.error(f"General error: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route('/generate-storyboards', methods=['POST', 'OPTIONS'])
-def generate_storyboards():
-    if request.method == 'OPTIONS':
-        return '', 200
-        
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No JSON data provided"
-            }), 400
-        
-        # Validate parameters
-        is_valid, error_message = validate_storyboard_params(data)
-        if not is_valid:
-            return jsonify({
-                "status": "error",
-                "message": error_message
-            }), 400
-        
-        description = data.get('description')
-        image_type = data.get('image_type')
-        number_of_boards = int(data.get('number_of_boards'))
-        user_art_style = data.get('art_style')  # Optional art style
-
-        # Add art style to task if provided
-        art_style_prompt = f"Art Style: {user_art_style}" if user_art_style else ""
-
-        # Build task for storyboard generation
-        task = f"""
-        User Description: {description}
-        Storyboard Type: {image_type}
-        Number of Storyboards: {number_of_boards}
-        {art_style_prompt}
-        
-        CRITICAL REQUIREMENTS:
-        - All images will be generated in 1:1 square format (1024x1024)
-        - Maintain CONSISTENT ART STYLE across all storyboards
-        - Use the same color palette, lighting, and visual approach
-        - Ensure visual continuity and coherence between scenes
-        - Create a unified visual narrative
-        
-        GOAL:
-        - Create {number_of_boards} storyboard scenes with detailed content based on the user description
-        - Generate supporting text for each storyboard
-        - Create image prompts that maintain consistent art style and visual continuity
-        - Ensure the content is appropriate for {image_type} storyboard type
-        - Return complete storyboard data in valid JSON format
-        """
-        
-        # Validate description length to prevent token limit issues
-        is_valid, token_count = validate_token_limit(description, max_tokens=2000)
-        if not is_valid:
-            return jsonify({
-                "status": "error",
-                "message": f"Description too long ({token_count} tokens). Please use a shorter description.",
-                "error_type": "token_limit"
-            }), 400
-        
-        # Run the storyboard team
-        result, error = safe_team_run(storyboard_team, task)
-        if error:
-            return jsonify(error), 500
-        
-        raw_output = result.content.strip()
-        
-        # Clean up any code fences and extract JSON
-        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-        app.logger.info(f"Storyboard Team raw output: {cleaned_output}")
-        
-        # Extract JSON part from the response
-        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
-        if not json_match:
-            return jsonify({
-                "status": "error",
-                "message": "No valid JSON found in response"
-            }), 500
-        
-        json_str = json_match.group(1)
-        response_data = json.loads(json_str)
-        
-        # Extract storyboards from response
-        storyboards = response_data.get("storyboards", [])
-        
-        # Generate images for each storyboard
-        final_storyboards = []
-        
-        # Determine art style for consistency
-        if user_art_style:
-            art_style = user_art_style
-        else:
-            art_styles = {
-                'Educational': 'clean, professional illustration style, bright colors, clear composition',
-                'Marketing': 'modern, vibrant, commercial art style, high contrast, engaging visuals',
-                'Entertainment': 'dynamic, cinematic style, dramatic lighting, rich colors',
-                'Technical': 'precise, technical illustration style, neutral colors, detailed diagrams'
-            }
-            art_style = art_styles.get(image_type, 'professional illustration style')
-        
-        for storyboard in storyboards:
-            try:
-                image_prompt = storyboard.get("image_prompt", "")
-                scene_number = storyboard.get("scene_number", 1)
-                
-                if image_prompt:
-                    # Generate image using DALL-E with consistent art style
-                    image_result = generate_image_with_dalle(
-                        prompt=image_prompt,
-                        aspect_ratio="1:1",
-                        art_style=art_style
-                    )
-                    
-                    final_storyboard = {
-                        "scene_number": scene_number,
-                        "image_prompt": image_prompt,
-                        "supporting_text": storyboard.get("supporting_text", ""),
-                        "image_url": image_result["image_url"],
-                        "image_path": image_result["image_path"],
-                        "image_filename": image_result["filename"],
-                        "art_style": art_style
-                    }
-                else:
-                    final_storyboard = {
-                        "scene_number": scene_number,
-                        "image_prompt": image_prompt,
-                        "supporting_text": storyboard.get("supporting_text", ""),
-                        "image_url": None,
-                        "image_path": None,
-                        "image_filename": None,
-                        "art_style": art_style
-                    }
-                
-                final_storyboards.append(final_storyboard)
-                
-            except Exception as e:
-                app.logger.error(f"Image generation failed for scene {scene_number}: {str(e)}")
-                # Add storyboard without image if generation fails
-                final_storyboard = {
-                    "scene_number": scene_number,
-                    "image_prompt": storyboard.get("image_prompt", ""),
-                    "supporting_text": storyboard.get("supporting_text", ""),
-                    "image_url": None,
-                    "image_path": None,
-                    "image_filename": None,
-                    "art_style": art_style,
-                    "error": f"Image generation failed: {str(e)}"
-                }
-                final_storyboards.append(final_storyboard)
-        
-        # Format the response
-        return jsonify({
-            "status": "success",
-            "data": {
-                "storyboards": final_storyboards,
-                "metadata": {
-                    "description": description,
-                    "image_type": image_type,
-                    "number_of_boards": number_of_boards,
-                    "total_generated": len(final_storyboards),
-                    "art_style": art_style
-                }
-            }
-        })
-        
-    except json.JSONDecodeError as e:
-        app.logger.error(f"JSON decode failed: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": "Invalid JSON returned by team"
-        }), 500
-        
-    except Exception as e:
-        app.logger.error(f"General error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/storyboard-images/<filename>', methods=['GET'])
-def serve_storyboard_image(filename):
-    """
-    Serve generated storyboard images
-    """
-    try:
-        image_path = os.path.join("src/storyboard_generations", filename)
-        if os.path.exists(image_path):
-            return send_file(image_path, mimetype='image/png')
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Image not found"
-            }), 404
-    except Exception as e:
-        app.logger.error(f"Error serving image: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/tavily-search', methods=['POST', 'OPTIONS'])
-def tavily_search():
-    if request.method == 'OPTIONS':
-        return '', 200
-        
-    try:
-        data = request.get_json()
-        if not data or not data.get('query'):
-            return jsonify({
-                "status": "error",
-                "message": "'query' is required"
-            }), 400
-            
-        query = data.get('query')
-
-        # Call the Tavily search toolkit directly for a simpler, faster response
-        search_result_str = search_toolkit.search_query(query)
-        response_data = json.loads(search_result_str)
-
-        return jsonify({
-            "status": "success",
-            "data": response_data
-        })
-
-    except Exception as e:
-        app.logger.error(f"Tavily search error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/tavily-map', methods=['POST', 'OPTIONS'])
-def tavily_map():
-    if request.method == 'OPTIONS':
-        return '', 200
-        
-    try:
-        data = request.get_json()
-        if not data or not data.get('url'):
-            return jsonify({
-                "status": "error",
-                "message": "'url' is required"
-            }), 400
-            
-        # Extract parameters from the payload
-        url = data.get('url')
-        max_depth = data.get('max_depth', 1)
-
-        # Call the Tavily map toolkit directly
-        map_result_str = map_toolkit.map_site(
-            url=url,
-            max_depth=max_depth
-        )
-        
-        # The result from the toolkit is a JSON string
-        response_data = json.loads(map_result_str)
-
-        return jsonify({
-            "status": "success",
-            "data": response_data
-        })
-
-    except Exception as e:
-        app.logger.error(f"Tavily map error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/brainstorm', methods=['POST', 'OPTIONS'])
-def brainstorm():
-    if request.method == 'OPTIONS':
-        return '', 200
-    try:
-        data = request.get_json()
-        if not data or not data.get('prompt'):
-            return jsonify({
-                "status": "error",
-                "message": "'prompt' is required"
-            }), 400
-        prompt = data['prompt']
-        task = f"""
-        Prompt: {prompt}
-
-        GOAL:
-        - Generate a list of creative, actionable, and inspiring ideas for the given prompt.
-        - Return the ideas in valid JSON format.
-        """
-        result, error = safe_team_run(brainstorm_agent, task)
-        if error:
-            return jsonify(error), 500
-        raw_output = result.content.strip()
-        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-        app.logger.info(f"Brainstorm Agent raw output: {cleaned_output}")
-        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
-        if not json_match:
-            return jsonify({
-                "status": "error",
-                "message": "No valid JSON found in response"
-            }), 500
-        json_str = json_match.group(1)
-        response_data = json.loads(json_str)
-        return jsonify({
-            "status": "success",
-            "data": {
-                "ideas": response_data.get("ideas", [])
-            }
-        })
-    except json.JSONDecodeError as e:
-        app.logger.error(f"JSON decode failed: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": "Invalid JSON returned by agent"
-        }), 500
-    except Exception as e:
-        app.logger.error(f"General error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/check-token-usage', methods=['POST', 'OPTIONS'])
-def check_token_usage():
-    if request.method == 'OPTIONS':
-        return '', 200
-        
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No JSON data provided"
-            }), 400
-            
-        content = data.get('content', '')
-        if not content:
-            return jsonify({
-                "status": "error",
-                "message": "'content' is required"
-            }), 400
-        
-        # Calculate token usage
-        estimated_tokens = estimate_tokens(content)
-        is_within_limit, _ = validate_token_limit(content, max_tokens=25000)
-        
-        # Provide guidance based on content type
-        guidance = ""
-        if estimated_tokens > 20000:
-            guidance = "Content is very long. Consider breaking it into smaller chunks."
-        elif estimated_tokens > 15000:
-            guidance = "Content is long. May hit rate limits with complex processing."
-        elif estimated_tokens > 10000:
-            guidance = "Content is moderately long. Should work fine for most operations."
-        else:
-            guidance = "Content length is good for processing."
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "estimated_tokens": estimated_tokens,
-                "is_within_limit": is_within_limit,
-                "guidance": guidance,
-                "max_recommended_tokens": 25000
-            }
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Token usage check error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
