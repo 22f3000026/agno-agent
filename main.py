@@ -15,6 +15,7 @@ import requests
 import base64
 from PIL import Image
 import io
+import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -135,6 +136,24 @@ audiobook_agent = Agent(
         "- Storytelling: narrative and immersive\n"
         "- Interview: Q&A format\n"
         "The script must be the correct length for the requested duration (e.g., 5 minutes of spoken audio, not more or less). "
+        "Always return valid JSON: {\"script\": \"...\"}. No explanations or markdown."
+    ),
+    model=OpenAIChat("gpt-4o"),
+)
+
+# Create a simpler audiobook agent that doesn't gather external content
+simple_audiobook_agent = Agent(
+    name="Simple Audiobook Agent",
+    role=(
+        "You are an audiobook script generator. "
+        "Generate a script based on the given topic, style, and duration. "
+        "Do NOT gather external information - create content based on your knowledge. "
+        "The script should be structured according to the requested style: "
+        "- Educational: informative and structured\n"
+        "- Conversational: casual and engaging\n"
+        "- Storytelling: narrative and immersive\n"
+        "- Interview: Q&A format\n"
+        "The script must be the correct length for the requested duration. "
         "Always return valid JSON: {\"script\": \"...\"}. No explanations or markdown."
     ),
     model=OpenAIChat("gpt-4o"),
@@ -305,6 +324,26 @@ audiobook_team = Team(
     """
 )
 
+# Simple audiobook team that doesn't gather external content
+simple_audiobook_team = Team(
+    name="Simple Audiobook Team",
+    mode="coordinate",
+    model=OpenAIChat("gpt-4o"),
+    members=[simple_audiobook_agent],
+    show_members_responses=True,
+    instructions=[
+        "Generate an audiobook script based on the topic, style, and duration.",
+        "Do not gather external information - create content based on knowledge.",
+        "Return final JSON with the script.",
+        "No markdown, explanations, or extra text — only valid JSON."
+    ],
+    success_criteria="""
+    - Generate a script matching the topic, style, and duration.
+    - Script is appropriate length for the requested duration.
+    - Final output is valid JSON with the script.
+    """
+)
+
 storyboard_team = Team(
     name="Storyboard Generation Team",
     mode="coordinate",
@@ -328,6 +367,101 @@ storyboard_team = Team(
 # Helper
 def is_valid_url(url):
     return re.match(r"^https?://", url) or re.match(r"^[\w\.-]+\.[a-z]{2,}", url)
+
+def estimate_tokens(text):
+    """
+    Rough estimation of tokens (1 token ≈ 4 characters for English text)
+    """
+    return len(text) // 4
+
+def validate_token_limit(text, max_tokens=25000):
+    """
+    Validate if text is within token limits
+    """
+    estimated_tokens = estimate_tokens(text)
+    return estimated_tokens <= max_tokens, estimated_tokens
+
+def truncate_content(content, max_tokens=20000):
+    """
+    Truncate content to fit within token limits
+    """
+    if not content:
+        return content
+    
+    estimated_tokens = estimate_tokens(content)
+    if estimated_tokens <= max_tokens:
+        return content
+    
+    # Calculate how many characters we can keep
+    max_chars = max_tokens * 4
+    truncated = content[:max_chars]
+    
+    # Try to truncate at a sentence boundary
+    last_period = truncated.rfind('.')
+    last_exclamation = truncated.rfind('!')
+    last_question = truncated.rfind('?')
+    
+    last_sentence_end = max(last_period, last_exclamation, last_question)
+    if last_sentence_end > max_chars * 0.8:  # If we can find a sentence end in the last 20%
+        truncated = truncated[:last_sentence_end + 1]
+    
+    return truncated + " [Content truncated due to length limits]"
+
+def handle_openai_rate_limit_error(error_message):
+    """
+    Parse and handle OpenAI rate limit errors
+    """
+    if "Request too large" in error_message or "tokens per min" in error_message:
+        return {
+            "status": "error",
+            "message": "Content too long. Please try a shorter topic or reduce duration.",
+            "error_type": "rate_limit"
+        }
+    elif "rate limit" in error_message.lower():
+        return {
+            "status": "error", 
+            "message": "Rate limit exceeded. Please wait a moment and try again.",
+            "error_type": "rate_limit"
+        }
+    else:
+        return {
+            "status": "error",
+            "message": "An error occurred while processing your request.",
+            "error_type": "general"
+        }
+
+def safe_team_run(team, task, max_tokens=25000):
+    """
+    Safely run a team with error handling for rate limits
+    """
+    try:
+        # Validate task length
+        is_valid, token_count = validate_token_limit(task, max_tokens)
+        if not is_valid:
+            return None, {
+                "status": "error",
+                "message": f"Request too long ({token_count} tokens). Please use shorter input.",
+                "error_type": "token_limit"
+            }
+        
+        result = team.run(task)
+        return result, None
+        
+    except Exception as e:
+        error_str = str(e)
+        app.logger.error(f"Team run error: {error_str}")
+        
+        # Handle OpenAI rate limit errors
+        if "Request too large" in error_str or "tokens per min" in error_str:
+            return None, handle_openai_rate_limit_error(error_str)
+        elif "rate limit" in error_str.lower():
+            return None, handle_openai_rate_limit_error(error_str)
+        else:
+            return None, {
+                "status": "error",
+                "message": f"Processing failed: {error_str}",
+                "error_type": "general"
+            }
 
 def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_style=None):
     """
@@ -402,9 +536,41 @@ def validate_storyboard_params(data):
     
     return True, "Valid"
 
+# Add CORS preflight handler
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = app.make_default_options_response()
+        response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Accept, Authorization"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
+@app.after_request
+def after_request(response):
+    # Add CORS headers to all responses
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Accept, Authorization"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
 @app.route('/')
 def index():
     return 'Hello, Railway!'
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint to verify server is running"""
+    return jsonify({
+        "status": "healthy",
+        "message": "Server is running",
+        "timestamp": str(datetime.datetime.now()),
+        "cors_origins": ALLOWED_ORIGINS
+    })
 
 @app.route('/generate-flashcards', methods=['POST', 'OPTIONS'])
 def generate_flashcards():
@@ -447,7 +613,10 @@ def generate_flashcards():
         - Return flashcards in valid JSON format
         """
 
-        result = tavily_flashcard_team.run(task)
+        result, error = safe_team_run(tavily_flashcard_team, task)
+        if error:
+            return jsonify(error), 500
+        
         raw_output = result.content.strip()
 
         # Clean up any code fences and extract JSON
@@ -529,7 +698,10 @@ def generate_summary():
         - Return summary in valid JSON format
         """
 
-        result = tavily_summary_team.run(task)
+        result, error = safe_team_run(tavily_summary_team, task)
+        if error:
+            return jsonify(error), 500
+        
         raw_output = result.content.strip()
 
         # Clean up any code fences and extract JSON
@@ -610,7 +782,10 @@ def generate_notes():
         - Return notes in valid JSON format.
         """
 
-        result = tavily_note_team.run(task)
+        result, error = safe_team_run(tavily_note_team, task)
+        if error:
+            return jsonify(error), 500
+        
         raw_output = result.content.strip()
 
         # Clean up any code fences and extract JSON
@@ -714,7 +889,10 @@ def generate_quiz():
         - Return quiz in valid JSON format
         """
 
-        result = tavily_quiz_team.run(task)
+        result, error = safe_team_run(tavily_quiz_team, task)
+        if error:
+            return jsonify(error), 500
+        
         raw_output = result.content.strip()
 
         # Clean up any code fences and extract JSON
@@ -769,56 +947,90 @@ def audiobook_to_audio():
         voice_id = data.get('voice_id', 'JBFqnCBsd6RMkjVDRZzb')
         model_id = data.get('model_id', 'eleven_multilingual_v2')
         output_format = data.get('output_format', 'mp3_44100_128')
+        
         if not topic:
             return jsonify({"status": "error", "message": "'topic' is required"}), 400
         if style not in ['Educational', 'Conversational', 'Storytelling', 'Interview']:
             return jsonify({"status": "error", "message": "Invalid style. Choose from Educational, Conversational, Storytelling, Interview."}), 400
-        # Step 1: Generate the script
+        
+        # Validate topic length to prevent token limit issues
+        is_valid, token_count = validate_token_limit(topic, max_tokens=1000)
+        if not is_valid:
+            return jsonify({
+                "status": "error", 
+                "message": f"Topic too long ({token_count} tokens). Please use a shorter topic.",
+                "error_type": "token_limit"
+            }), 400
+        
+        # Step 1: Generate the script using simple team
         task = f"""
         Topic: {topic}
         Storytelling Style: {style}
         Duration: {duration}
         
         GOAL:
-        - Gather information on the topic.
         - Generate a script for an audiobook in the requested style.
         - The script must be the correct length for the requested duration (e.g., {duration} of spoken audio, not more or less).
         - Return the script in valid JSON format: {{"script": "..."}}
         """
-        result = audiobook_team.run(task)
+        
+        result, error = safe_team_run(simple_audiobook_team, task)
+        if error:
+            return jsonify(error), 500
+        
         raw_output = result.content.strip()
         cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-        app.logger.info(f"Audiobook Team raw output: {cleaned_output}")
+        app.logger.info(f"Simple Audiobook Team raw output: {cleaned_output}")
+        
         json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
         if not json_match:
             app.logger.error("No valid JSON found in response")
             return jsonify({"status": "error", "message": "No valid JSON found in response"}), 500
+        
         json_str = json_match.group(1)
         response_data = json.loads(json_str)
         script = response_data.get("script", "")
+        
         if not script:
             return jsonify({"status": "error", "message": "No script found in response"}), 500
+        
+        # Validate script length
+        is_valid, script_tokens = validate_token_limit(script, max_tokens=15000)
+        if not is_valid:
+            script = truncate_content(script, max_tokens=15000)
+            app.logger.warning(f"Script truncated from {script_tokens} to ~15000 tokens")
+        
         # Step 2: Generate audio from the script
-        filename = f"audiobook_{uuid.uuid4().hex}.mp3"
-        toolkit = ElevenLabsToolkit()
-        audio_result = toolkit.text_to_speech(
-            text=script,
-            voice_id=voice_id,
-            model_id=model_id,
-            output_format=output_format,
-            filename=filename
-        )
-        audio_file = audio_result.get('audio_file')
-        audio_file_name = audio_result.get('audio_file_name')
-        return jsonify({
-            "status": "success",
-            "data": {
-                "script": script,
-                "audio_file": audio_file,
-                "audio_file_name": audio_file_name,
-                "audio_url": f"/audio/{audio_file_name}"
-            }
-        })
+        try:
+            filename = f"audiobook_{uuid.uuid4().hex}.mp3"
+            toolkit = ElevenLabsToolkit()
+            audio_result = toolkit.text_to_speech(
+                text=script,
+                voice_id=voice_id,
+                model_id=model_id,
+                output_format=output_format,
+                filename=filename
+            )
+            audio_file = audio_result.get('audio_file')
+            audio_file_name = audio_result.get('audio_file_name')
+            
+            return jsonify({
+                "status": "success",
+                "data": {
+                    "script": script,
+                    "audio_file": audio_file,
+                    "audio_file_name": audio_file_name,
+                    "audio_url": f"/audio/{audio_file_name}"
+                }
+            })
+            
+        except Exception as e:
+            app.logger.error(f"Audio generation error: {str(e)}")
+            return jsonify({
+                "status": "error",
+                "message": f"Audio generation failed: {str(e)}"
+            }), 500
+            
     except json.JSONDecodeError as e:
         app.logger.error(f"JSON decode failed: {str(e)}")
         return jsonify({"status": "error", "message": "Invalid JSON returned by team"}), 500
@@ -877,8 +1089,20 @@ def generate_storyboards():
         - Return complete storyboard data in valid JSON format
         """
         
+        # Validate description length to prevent token limit issues
+        is_valid, token_count = validate_token_limit(description, max_tokens=2000)
+        if not is_valid:
+            return jsonify({
+                "status": "error",
+                "message": f"Description too long ({token_count} tokens). Please use a shorter description.",
+                "error_type": "token_limit"
+            }), 400
+        
         # Run the storyboard team
-        result = storyboard_team.run(task)
+        result, error = safe_team_run(storyboard_team, task)
+        if error:
+            return jsonify(error), 500
+        
         raw_output = result.content.strip()
         
         # Clean up any code fences and extract JSON
@@ -1102,7 +1326,9 @@ def brainstorm():
         - Generate a list of creative, actionable, and inspiring ideas for the given prompt.
         - Return the ideas in valid JSON format.
         """
-        result = brainstorm_agent.run(task)
+        result, error = safe_team_run(brainstorm_agent, task)
+        if error:
+            return jsonify(error), 500
         raw_output = result.content.strip()
         cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
         app.logger.info(f"Brainstorm Agent raw output: {cleaned_output}")
@@ -1128,6 +1354,58 @@ def brainstorm():
         }), 500
     except Exception as e:
         app.logger.error(f"General error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/check-token-usage', methods=['POST', 'OPTIONS'])
+def check_token_usage():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No JSON data provided"
+            }), 400
+            
+        content = data.get('content', '')
+        if not content:
+            return jsonify({
+                "status": "error",
+                "message": "'content' is required"
+            }), 400
+        
+        # Calculate token usage
+        estimated_tokens = estimate_tokens(content)
+        is_within_limit, _ = validate_token_limit(content, max_tokens=25000)
+        
+        # Provide guidance based on content type
+        guidance = ""
+        if estimated_tokens > 20000:
+            guidance = "Content is very long. Consider breaking it into smaller chunks."
+        elif estimated_tokens > 15000:
+            guidance = "Content is long. May hit rate limits with complex processing."
+        elif estimated_tokens > 10000:
+            guidance = "Content is moderately long. Should work fine for most operations."
+        else:
+            guidance = "Content length is good for processing."
+        
+        return jsonify({
+            "status": "success",
+            "data": {
+                "estimated_tokens": estimated_tokens,
+                "is_within_limit": is_within_limit,
+                "guidance": guidance,
+                "max_recommended_tokens": 25000
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Token usage check error: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
