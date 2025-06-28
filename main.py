@@ -31,15 +31,29 @@ from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearc
 from elabs_toolkit import ElevenLabsToolkit
 
 app = Flask(__name__)
-CORS(app, resources={
-    r"/*": {
-        "origin": [
+
+# More flexible CORS configuration
+ALLOWED_ORIGINS = [
     'https://100agent-iota.vercel.app',
     'https://100agent-96s7zmbag-akdeepankars-projects.vercel.app',
-    'http://localhost:3000'
-  ],
+    'http://localhost:3000',
+    'https://prospace-4d2a452088b6.herokuapp.com'
+]
+
+# Add environment-based origins
+if os.environ.get('FLASK_ENV') == 'development':
+    ALLOWED_ORIGINS.extend([
+        'http://localhost:3001',
+        'http://localhost:3002',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:3001'
+    ])
+
+CORS(app, resources={
+    r"/*": {
+        "origin": ALLOWED_ORIGINS,
         "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Accept"],
+        "allow_headers": ["Content-Type", "Accept", "Authorization"],
         "supports_credentials": True
     }
 })
