@@ -479,6 +479,8 @@ def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_
         if not OPENAI_API_KEY:
             raise Exception("OpenAI API key is not configured")
         
+        app.logger.info(f"Starting image generation with prompt: {prompt[:100]}...")
+        
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         
         # Always use 1:1 ratio for storyboards
@@ -489,6 +491,8 @@ def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_
         if art_style:
             enhanced_prompt = f"{prompt}, {art_style}"
         
+        app.logger.info(f"Enhanced prompt: {enhanced_prompt[:100]}...")
+        
         response = client.images.generate(
             model="dall-e-3",
             prompt=enhanced_prompt,
@@ -497,9 +501,13 @@ def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_
             n=1,
         )
         
+        app.logger.info("DALL-E API call successful")
+        
         image_url = response.data[0].url
+        app.logger.info(f"Generated image URL: {image_url}")
         
         # Download and save the image
+        app.logger.info("Downloading image...")
         image_response = requests.get(image_url)
         image_response.raise_for_status()
         
@@ -507,9 +515,15 @@ def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_
         filename = f"storyboard_{uuid.uuid4().hex}.png"
         filepath = os.path.join("src/storyboard_generations", filename)
         
+        # Ensure directory exists
+        os.makedirs("src/storyboard_generations", exist_ok=True)
+        
         # Save image
+        app.logger.info(f"Saving image to: {filepath}")
         with open(filepath, "wb") as f:
             f.write(image_response.content)
+        
+        app.logger.info("Image generation completed successfully")
         
         return {
             "image_url": image_url,
@@ -518,8 +532,10 @@ def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_
         }
         
     except ImportError as e:
+        app.logger.error(f"Import error: {str(e)}")
         raise Exception(f"OpenAI package not available: {str(e)}")
     except Exception as e:
+        app.logger.error(f"Image generation error: {str(e)}")
         raise Exception(f"Image generation failed: {str(e)}")
 
 def validate_storyboard_params(data):
@@ -1160,6 +1176,91 @@ def generate_storyboards():
         return jsonify({
             "status": "error",
             "message": str(e)
+        }), 500
+
+@app.route('/test-openai-key', methods=['GET'])
+def test_openai_key():
+    """
+    Test endpoint to validate OpenAI API key
+    """
+    try:
+        if not OPENAI_API_KEY:
+            return jsonify({
+                "status": "error",
+                "message": "OpenAI API key is not configured"
+            }), 500
+        
+        # Test with a simple API call
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        
+        # Try to list models to test the API key
+        try:
+            models = client.models.list()
+            return jsonify({
+                "status": "success",
+                "message": "OpenAI API key is valid",
+                "api_key_length": len(OPENAI_API_KEY),
+                "api_key_prefix": OPENAI_API_KEY[:10] + "...",
+                "models_available": len(models.data) if models.data else 0
+            })
+        except Exception as api_error:
+            return jsonify({
+                "status": "error",
+                "message": f"OpenAI API key validation failed: {str(api_error)}",
+                "api_key_length": len(OPENAI_API_KEY),
+                "api_key_prefix": OPENAI_API_KEY[:10] + "..."
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Test failed: {str(e)}"
+        }), 500
+
+@app.route('/test-image-generation', methods=['POST'])
+def test_image_generation():
+    """
+    Test endpoint specifically for DALL-E image generation
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No JSON data provided"
+            }), 400
+        
+        prompt = data.get('prompt', 'A simple cat sitting on a chair')
+        art_style = data.get('art_style', 'digital art style')
+        
+        # Test the image generation function
+        try:
+            result = generate_image_with_dalle(
+                prompt=prompt,
+                art_style=art_style
+            )
+            
+            return jsonify({
+                "status": "success",
+                "message": "Image generation successful",
+                "data": result,
+                "test_prompt": prompt,
+                "test_art_style": art_style
+            })
+            
+        except Exception as img_error:
+            return jsonify({
+                "status": "error",
+                "message": f"Image generation failed: {str(img_error)}",
+                "error_type": "image_generation",
+                "test_prompt": prompt,
+                "test_art_style": art_style
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Test failed: {str(e)}"
         }), 500
 
 @app.route('/test-storyboards', methods=['GET'])
