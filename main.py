@@ -33,7 +33,11 @@ from elabs_toolkit import ElevenLabsToolkit
 app = Flask(__name__)
 CORS(app, resources={
     r"/*": {
-        "origins": ["http://localhost:3000", "http://127.0.0.1:3000", "https://energetic-courage-production.up.railway.app"],
+        "origin": [
+    'https://100agent-iota.vercel.app',
+    'https://100agent-96s7zmbag-akdeepankars-projects.vercel.app',
+    'http://localhost:3000'
+  ],
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Accept"],
         "supports_credentials": True
