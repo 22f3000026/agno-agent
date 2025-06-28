@@ -856,3 +856,109 @@ def generate_notes():
             "status": "error",
             "message": str(e)
         }), 500
+    
+
+@app.route('/generate-quiz', methods=['POST', 'OPTIONS'])
+def generate_quiz():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No JSON data provided"
+            }), 400
+            
+        # Accept either url or query
+        url = data.get('url')
+        query = data.get('query')
+        
+        if not url and not query:
+            return jsonify({
+                "status": "error",
+                "message": "Either 'url' or 'query' is required"
+            }), 400
+
+        num_questions = data.get('num_questions', 5)  # Default to 5 questions
+        difficulty = data.get('difficulty', 'medium')  # Default to medium difficulty
+
+        # Validate inputs
+        if url and not is_valid_url(url):
+            return jsonify({
+                "status": "error",
+                "message": "Invalid URL provided"
+            }), 400
+
+        if not isinstance(num_questions, int) or num_questions < 1 or num_questions > 20:
+            return jsonify({
+                "status": "error",
+                "message": "Number of questions must be between 1 and 20"
+            }), 400
+
+        if difficulty not in ['easy', 'medium', 'hard']:
+            return jsonify({
+                "status": "error",
+                "message": "Difficulty must be 'easy', 'medium', or 'hard'"
+            }), 400
+
+        # Normalize URL if needed
+        if url and not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        # Build task
+        task = f"""
+        Input: {url if url else query}
+        Input Type: {"URL" if url else "Search Query"}
+        Number of Questions: {num_questions}
+        Difficulty Level: {difficulty}
+
+        GOAL:
+        - If URL is provided, extract content from it
+        - If search query is provided, search for relevant content
+        - Generate a quiz with {num_questions} questions at {difficulty} difficulty
+        - Each question should have 4 options and one correct answer
+        - Return quiz in valid JSON format
+        """
+
+        result = tavily_quiz_team.run(task)
+        raw_output = result.content.strip()
+
+        # Clean up any code fences and extract JSON
+        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+        app.logger.info(f"Team raw output: {cleaned_output}")
+
+        # Extract JSON part from the response
+        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
+        if not json_match:
+            return jsonify({
+                "status": "error",
+                "message": "No valid JSON found in response"
+            }), 500
+
+        json_str = json_match.group(1)
+        response_data = json.loads(json_str)
+        
+        # Format the response to match the expected structure
+        return jsonify({
+            "status": "success",
+            "data": {
+                "quiz": response_data.get("quiz", {})
+            }
+        })
+
+    except json.JSONDecodeError as e:
+        app.logger.error(f"JSON decode failed: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": "Invalid JSON returned by team"
+        }), 500
+
+    except Exception as e:
+        app.logger.error(f"General error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
