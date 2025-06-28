@@ -171,14 +171,11 @@ simple_audiobook_agent = Agent(
 storyboard_content_agent = Agent(
     name="Storyboard Content Agent",
     role=(
-        "You are a storyboard content creator. "
-        "Given a refined prompt and scene breakdown, create detailed storyboard content with supporting text for each scene. "
+        "You are a storyboard creator. "
+        "Given a topic and number of scenes, create simple storyboard content. "
         "Each storyboard should have: "
-        "- A clear visual description for image generation "
-        "- Supporting text that explains or narrates the scene "
-        "- Appropriate tone and style for the storyboard type "
-        "- CONSISTENT ART STYLE: All image prompts must use the same artistic style, color palette, and visual approach "
-        "- COHERENT VISUAL NARRATIVE: Images should flow together as a unified story with consistent characters, settings, and visual elements "
+        "- A clear image prompt for generating a visual "
+        "- Supporting text that describes the scene "
         "Always return valid JSON: {\"storyboards\": [{\"scene_number\": 1, \"image_prompt\": \"...\", \"supporting_text\": \"...\"}]}. "
         "No explanations or markdown. Only valid JSON."
     ),
@@ -356,16 +353,16 @@ storyboard_team = Team(
     name="Storyboard Generation Team",
     mode="coordinate",
     model=OpenAIChat("gpt-4o"),
-    members=[storyboard_content_agent],  # Remove image_generation_agent to avoid potential issues
+    members=[storyboard_content_agent],
     show_members_responses=True,
     instructions=[
-        "Storyboard Content Agent creates detailed content with image prompts and supporting text.",
-        "Create {number_of_boards} storyboard scenes with clear image prompts and supporting text.",
-        "Return final JSON with complete storyboard data including image prompts and text.",
+        "Create {number_of_boards} storyboard scenes for the given topic.",
+        "Each scene should have an image prompt and supporting text.",
+        "Return final JSON with complete storyboard data.",
         "No markdown, explanations, or extra text — only valid JSON."
     ],
     success_criteria="""
-    - Content Agent creates detailed storyboard content with clear image prompts.
+    - Create the requested number of storyboard scenes.
     - Each storyboard has scene_number, image_prompt, and supporting_text.
     - Final output is valid JSON with complete storyboard data.
     """
@@ -542,16 +539,11 @@ def validate_storyboard_params(data):
     """
     Validate storyboard generation parameters
     """
-    required_fields = ['description', 'image_type', 'number_of_boards']
+    required_fields = ['description', 'number_of_boards']
     
     for field in required_fields:
         if field not in data:
             return False, f"Missing required field: {field}"
-    
-    # Validate image_type
-    valid_types = ['Educational', 'Marketing', 'Entertainment', 'Technical']
-    if data['image_type'] not in valid_types:
-        return False, f"Invalid image_type. Must be one of: {', '.join(valid_types)}"
     
     # Validate number_of_boards
     try:
@@ -560,10 +552,6 @@ def validate_storyboard_params(data):
             return False, "number_of_boards must be between 1 and 10"
     except (ValueError, TypeError):
         return False, "number_of_boards must be a valid integer"
-    
-    # Validate skip_images (optional boolean)
-    if 'skip_images' in data and not isinstance(data['skip_images'], bool):
-        return False, "skip_images must be a boolean value"
     
     return True, "Valid"
 
@@ -980,33 +968,15 @@ def generate_storyboards():
             }), 400
         
         description = data.get('description')
-        image_type = data.get('image_type')
         number_of_boards = int(data.get('number_of_boards'))
-        user_art_style = data.get('art_style')  # Optional art style
 
-        # Add art style to task if provided
-        art_style_prompt = f"Art Style: {user_art_style}" if user_art_style else ""
-
-        # Build task for storyboard generation
+        # Build simple task for storyboard generation
         task = f"""
-        User Description: {description}
-        Storyboard Type: {image_type}
+        Topic: {description}
         Number of Storyboards: {number_of_boards}
-        {art_style_prompt}
         
-        CRITICAL REQUIREMENTS:
-        - All images will be generated in 1:1 square format (1024x1024)
-        - Maintain CONSISTENT ART STYLE across all storyboards
-        - Use the same color palette, lighting, and visual approach
-        - Ensure visual continuity and coherence between scenes
-        - Create a unified visual narrative
-        
-        GOAL:
-        - Create {number_of_boards} storyboard scenes with detailed content based on the user description
-        - Generate supporting text for each storyboard
-        - Create image prompts that maintain consistent art style and visual continuity
-        - Ensure the content is appropriate for {image_type} storyboard type
-        - Return complete storyboard data in valid JSON format
+        Create {number_of_boards} storyboard scenes for this topic.
+        Each scene should have an image prompt and supporting text.
         """
         
         # Run the storyboard team
@@ -1041,33 +1011,17 @@ def generate_storyboards():
         # Generate images for each storyboard
         final_storyboards = []
         
-        # Determine art style for consistency
-        if user_art_style:
-            art_style = user_art_style
-        else:
-            art_styles = {
-                'Educational': 'clean, professional illustration style, bright colors, clear composition',
-                'Marketing': 'modern, vibrant, commercial art style, high contrast, engaging visuals',
-                'Entertainment': 'dynamic, cinematic style, dramatic lighting, rich colors',
-                'Technical': 'precise, technical illustration style, neutral colors, detailed diagrams'
-            }
-            art_style = art_styles.get(image_type, 'professional illustration style')
-        
-        # Check if image generation should be attempted
-        skip_image_generation = data.get('skip_images', False)
-        
         for storyboard in storyboards:
             try:
                 image_prompt = storyboard.get("image_prompt", "")
                 scene_number = storyboard.get("scene_number", 1)
                 
-                if image_prompt and not skip_image_generation:
-                    # Generate image using DALL-E with consistent art style
+                if image_prompt:
+                    # Generate image using DALL-E
                     try:
                         image_result = generate_image_with_dalle(
                             prompt=image_prompt,
-                            aspect_ratio="1:1",
-                            art_style=art_style
+                            aspect_ratio="1:1"
                         )
                         
                         final_storyboard = {
@@ -1076,8 +1030,7 @@ def generate_storyboards():
                             "supporting_text": storyboard.get("supporting_text", ""),
                             "image_url": image_result["image_url"],
                             "image_path": image_result["image_path"],
-                            "image_filename": image_result["filename"],
-                            "art_style": art_style
+                            "image_filename": image_result["filename"]
                         }
                     except Exception as img_error:
                         app.logger.error(f"Image generation failed for scene {scene_number}: {str(img_error)}")
@@ -1089,19 +1042,17 @@ def generate_storyboards():
                             "image_url": None,
                             "image_path": None,
                             "image_filename": None,
-                            "art_style": art_style,
                             "error": f"Image generation failed: {str(img_error)}"
                         }
                 else:
-                    # Create storyboard without image
+                    # Create storyboard without image if no prompt
                     final_storyboard = {
                         "scene_number": scene_number,
                         "image_prompt": image_prompt,
                         "supporting_text": storyboard.get("supporting_text", ""),
                         "image_url": None,
                         "image_path": None,
-                        "image_filename": None,
-                        "art_style": art_style
+                        "image_filename": None
                     }
                 
                 final_storyboards.append(final_storyboard)
@@ -1116,7 +1067,6 @@ def generate_storyboards():
                     "image_url": None,
                     "image_path": None,
                     "image_filename": None,
-                    "art_style": art_style,
                     "error": f"Processing failed: {str(e)}"
                 }
                 final_storyboards.append(final_storyboard)
@@ -1128,10 +1078,8 @@ def generate_storyboards():
                 "storyboards": final_storyboards,
                 "metadata": {
                     "description": description,
-                    "image_type": image_type,
                     "number_of_boards": number_of_boards,
-                    "total_generated": len(final_storyboards),
-                    "art_style": art_style
+                    "total_generated": len(final_storyboards)
                 }
             }
         })
@@ -1171,3 +1119,11 @@ def serve_storyboard_image(filename):
             "status": "error",
             "message": str(e)
         }), 500
+
+if __name__ == '__main__':
+    # Enable debug mode for development
+    app.debug = True
+    
+    # Set host to 0.0.0.0 to allow external connections
+    # Set port to 5000 (default Flask port)
+    app.run(host='0.0.0.0', port=5000, debug=True)
