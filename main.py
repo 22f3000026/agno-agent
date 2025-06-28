@@ -962,3 +962,190 @@ def generate_quiz():
             "message": str(e)
         }), 500
 
+@app.route('/generate-storyboards', methods=['POST', 'OPTIONS'])
+def generate_storyboards():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No JSON data provided"
+            }), 400
+        
+        # Validate parameters
+        is_valid, error_message = validate_storyboard_params(data)
+        if not is_valid:
+            return jsonify({
+                "status": "error",
+                "message": error_message
+            }), 400
+        
+        description = data.get('description')
+        image_type = data.get('image_type')
+        number_of_boards = int(data.get('number_of_boards'))
+        user_art_style = data.get('art_style')  # Optional art style
+
+        # Add art style to task if provided
+        art_style_prompt = f"Art Style: {user_art_style}" if user_art_style else ""
+
+        # Build task for storyboard generation
+        task = f"""
+        User Description: {description}
+        Storyboard Type: {image_type}
+        Number of Storyboards: {number_of_boards}
+        {art_style_prompt}
+        
+        CRITICAL REQUIREMENTS:
+        - All images will be generated in 1:1 square format (1024x1024)
+        - Maintain CONSISTENT ART STYLE across all storyboards
+        - Use the same color palette, lighting, and visual approach
+        - Ensure visual continuity and coherence between scenes
+        - Create a unified visual narrative
+        
+        GOAL:
+        - Create {number_of_boards} storyboard scenes with detailed content based on the user description
+        - Generate supporting text for each storyboard
+        - Create image prompts that maintain consistent art style and visual continuity
+        - Ensure the content is appropriate for {image_type} storyboard type
+        - Return complete storyboard data in valid JSON format
+        """
+        
+        # Run the storyboard team
+        result = storyboard_team.run(task)
+        raw_output = result.content.strip()
+        
+        # Clean up any code fences and extract JSON
+        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+        app.logger.info(f"Storyboard Team raw output: {cleaned_output}")
+        
+        # Extract JSON part from the response
+        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
+        if not json_match:
+            return jsonify({
+                "status": "error",
+                "message": "No valid JSON found in response"
+            }), 500
+        
+        json_str = json_match.group(1)
+        response_data = json.loads(json_str)
+        
+        # Extract storyboards from response
+        storyboards = response_data.get("storyboards", [])
+        
+        # Generate images for each storyboard
+        final_storyboards = []
+        
+        # Determine art style for consistency
+        if user_art_style:
+            art_style = user_art_style
+        else:
+            art_styles = {
+                'Educational': 'clean, professional illustration style, bright colors, clear composition',
+                'Marketing': 'modern, vibrant, commercial art style, high contrast, engaging visuals',
+                'Entertainment': 'dynamic, cinematic style, dramatic lighting, rich colors',
+                'Technical': 'precise, technical illustration style, neutral colors, detailed diagrams'
+            }
+            art_style = art_styles.get(image_type, 'professional illustration style')
+        
+        for storyboard in storyboards:
+            try:
+                image_prompt = storyboard.get("image_prompt", "")
+                scene_number = storyboard.get("scene_number", 1)
+                
+                if image_prompt:
+                    # Generate image using DALL-E with consistent art style
+                    image_result = generate_image_with_dalle(
+                        prompt=image_prompt,
+                        aspect_ratio="1:1",
+                        art_style=art_style
+                    )
+                    
+                    final_storyboard = {
+                        "scene_number": scene_number,
+                        "image_prompt": image_prompt,
+                        "supporting_text": storyboard.get("supporting_text", ""),
+                        "image_url": image_result["image_url"],
+                        "image_path": image_result["image_path"],
+                        "image_filename": image_result["filename"],
+                        "art_style": art_style
+                    }
+                else:
+                    final_storyboard = {
+                        "scene_number": scene_number,
+                        "image_prompt": image_prompt,
+                        "supporting_text": storyboard.get("supporting_text", ""),
+                        "image_url": None,
+                        "image_path": None,
+                        "image_filename": None,
+                        "art_style": art_style
+                    }
+                
+                final_storyboards.append(final_storyboard)
+                
+            except Exception as e:
+                app.logger.error(f"Image generation failed for scene {scene_number}: {str(e)}")
+                # Add storyboard without image if generation fails
+                final_storyboard = {
+                    "scene_number": scene_number,
+                    "image_prompt": storyboard.get("image_prompt", ""),
+                    "supporting_text": storyboard.get("supporting_text", ""),
+                    "image_url": None,
+                    "image_path": None,
+                    "image_filename": None,
+                    "art_style": art_style,
+                    "error": f"Image generation failed: {str(e)}"
+                }
+                final_storyboards.append(final_storyboard)
+        
+        # Format the response
+        return jsonify({
+            "status": "success",
+            "data": {
+                "storyboards": final_storyboards,
+                "metadata": {
+                    "description": description,
+                    "image_type": image_type,
+                    "number_of_boards": number_of_boards,
+                    "total_generated": len(final_storyboards),
+                    "art_style": art_style
+                }
+            }
+        })
+        
+    except json.JSONDecodeError as e:
+        app.logger.error(f"JSON decode failed: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": "Invalid JSON returned by team"
+        }), 500
+        
+    except Exception as e:
+        app.logger.error(f"General error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/storyboard-images/<filename>', methods=['GET'])
+def serve_storyboard_image(filename):
+    """
+    Serve generated storyboard images
+    """
+    try:
+        image_path = os.path.join("src/storyboard_generations", filename)
+        if os.path.exists(image_path):
+            return send_file(image_path, mimetype='image/png')
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Image not found"
+            }), 404
+    except Exception as e:
+        app.logger.error(f"Error serving image: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
