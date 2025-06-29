@@ -10,6 +10,7 @@ from agno.tools.eleven_labs import ElevenLabsTools
 from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit, TavilyMapToolkit
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from elabs_toolkit import ElevenLabsToolkit
+from image_toolkit import ImageGenerationToolkit
 import uuid
 import requests
 import base64
@@ -77,6 +78,9 @@ crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
 extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
 search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 map_toolkit = TavilyMapToolkit(TAVILY_API_KEY)
+
+# Setup image generation toolkit
+image_toolkit = ImageGenerationToolkit(OPENAI_API_KEY)
 
 # Create directories for storyboard images
 os.makedirs("src/storyboard_generations", exist_ok=True)
@@ -182,20 +186,16 @@ storyboard_content_agent = Agent(
     model=OpenAIChat("gpt-4o"),
 )
 
-image_generation_agent = Agent(
+image_agent = Agent(
     name="Image Generation Agent",
     role=(
         "You are an image generation specialist. "
-        "Given image prompts, generate high-quality images using DALL-E 3. "
-        "CRITICAL REQUIREMENTS: "
-        "- All images must maintain the SAME ARTISTIC STYLE throughout the storyboard "
-        "- Use consistent color palette, lighting, and visual approach "
-        "- Ensure visual continuity between scenes "
-        "- All images will be generated in 1:1 square format "
-        "Always return valid JSON: {\"images\": [{\"scene_number\": 1, \"image_url\": \"...\", \"image_path\": \"...\"}]}. "
-        "No explanations or markdown. Only valid JSON."
+        "Given an image prompt, generate a high-quality image using DALL-E 3. "
+        "Return the image URL as a simple string. "
+        "No JSON formatting, just the URL."
     ),
     model=OpenAIChat("gpt-4o"),
+    tools=[image_toolkit],
 )
 
 note_agent = Agent(
@@ -466,74 +466,6 @@ def safe_team_run(team, task, max_tokens=25000):
                 "message": f"Processing failed: {error_str}",
                 "error_type": "general"
             }
-
-def generate_image_with_dalle(prompt, aspect_ratio="1:1", size="1024x1024", art_style=None):
-    """
-    Generate image using DALL-E 3 API with consistent art style
-    """
-    try:
-        # Check if OpenAI API key is available
-        if not OPENAI_API_KEY:
-            raise Exception("OpenAI API key is not configured")
-        
-        app.logger.info(f"Starting image generation with prompt: {prompt[:100]}...")
-        
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        
-        # Always use 1:1 ratio for storyboards
-        dalle_size = "1024x1024"
-        
-        # Enhance prompt with art style consistency
-        enhanced_prompt = prompt
-        if art_style:
-            enhanced_prompt = f"{prompt}, {art_style}"
-        
-        app.logger.info(f"Enhanced prompt: {enhanced_prompt[:100]}...")
-        
-        response = client.images.generate(
-            model="dall-e-3",
-            prompt=enhanced_prompt,
-            size=dalle_size,
-            quality="standard",
-            n=1,
-        )
-        
-        app.logger.info("DALL-E API call successful")
-        
-        image_url = response.data[0].url
-        app.logger.info(f"Generated image URL: {image_url}")
-        
-        # Download and save the image
-        app.logger.info("Downloading image...")
-        image_response = requests.get(image_url)
-        image_response.raise_for_status()
-        
-        # Generate unique filename
-        filename = f"storyboard_{uuid.uuid4().hex}.png"
-        filepath = os.path.join("src/storyboard_generations", filename)
-        
-        # Ensure directory exists
-        os.makedirs("src/storyboard_generations", exist_ok=True)
-        
-        # Save image
-        app.logger.info(f"Saving image to: {filepath}")
-        with open(filepath, "wb") as f:
-            f.write(image_response.content)
-        
-        app.logger.info("Image generation completed successfully")
-        
-        return {
-            "image_url": image_url,
-            "image_path": filepath,
-            "filename": filename
-        }
-        
-    except ImportError as e:
-        app.logger.error(f"Import error: {str(e)}")
-        raise Exception(f"OpenAI package not available: {str(e)}")
-    except Exception as e:
-        app.logger.error(f"Image generation error: {str(e)}")
-        raise Exception(f"Image generation failed: {str(e)}")
 
 def validate_storyboard_params(data):
     """
@@ -970,7 +902,7 @@ def generate_storyboards():
         description = data.get('description')
         number_of_boards = int(data.get('number_of_boards'))
 
-        # Build simple task for storyboard generation
+        # Build task for storyboard generation
         task = f"""
         Topic: {description}
         Number of Storyboards: {number_of_boards}
@@ -1017,11 +949,13 @@ def generate_storyboards():
                 scene_number = storyboard.get("scene_number", 1)
                 
                 if image_prompt:
-                    # Generate image using DALL-E
+                    # Generate image using the toolkit
                     try:
-                        image_result = generate_image_with_dalle(
+                        image_result = image_toolkit.generate_image(
                             prompt=image_prompt,
-                            aspect_ratio="1:1"
+                            aspect_ratio="1:1",
+                            size="1024x1024",
+                            quality="standard"
                         )
                         
                         final_storyboard = {
@@ -1030,7 +964,7 @@ def generate_storyboards():
                             "supporting_text": storyboard.get("supporting_text", ""),
                             "image_url": image_result["image_url"],
                             "image_path": image_result["image_path"],
-                            "image_filename": image_result["filename"]
+                            "filename": image_result["filename"]
                         }
                     except Exception as img_error:
                         app.logger.error(f"Image generation failed for scene {scene_number}: {str(img_error)}")
@@ -1041,7 +975,7 @@ def generate_storyboards():
                             "supporting_text": storyboard.get("supporting_text", ""),
                             "image_url": None,
                             "image_path": None,
-                            "image_filename": None,
+                            "filename": None,
                             "error": f"Image generation failed: {str(img_error)}"
                         }
                 else:
@@ -1052,7 +986,7 @@ def generate_storyboards():
                         "supporting_text": storyboard.get("supporting_text", ""),
                         "image_url": None,
                         "image_path": None,
-                        "image_filename": None
+                        "filename": None
                     }
                 
                 final_storyboards.append(final_storyboard)
@@ -1066,7 +1000,7 @@ def generate_storyboards():
                     "supporting_text": storyboard.get("supporting_text", ""),
                     "image_url": None,
                     "image_path": None,
-                    "image_filename": None,
+                    "filename": None,
                     "error": f"Processing failed: {str(e)}"
                 }
                 final_storyboards.append(final_storyboard)
@@ -1106,6 +1040,80 @@ def serve_storyboard_image(filename):
     """
     try:
         image_path = os.path.join("src/storyboard_generations", filename)
+        if os.path.exists(image_path):
+            return send_file(image_path, mimetype='image/png')
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Image not found"
+            }), 404
+    except Exception as e:
+        app.logger.error(f"Error serving image: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/generate-image', methods=['POST', 'OPTIONS'])
+def generate_image():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No JSON data provided"
+            }), 400
+        
+        prompt = data.get('prompt')
+        if not prompt:
+            return jsonify({
+                "status": "error",
+                "message": "Prompt is required"
+            }), 400
+        
+        # Optional parameters
+        aspect_ratio = data.get('aspect_ratio', '1:1')
+        size = data.get('size', '1024x1024')
+        quality = data.get('quality', 'standard')
+        
+        # Generate image using the toolkit
+        try:
+            image_result = image_toolkit.generate_image(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                size=size,
+                quality=quality
+            )
+            
+            return jsonify({
+                "status": "success",
+                "data": image_result
+            })
+            
+        except Exception as img_error:
+            app.logger.error(f"Image generation failed: {str(img_error)}")
+            return jsonify({
+                "status": "error",
+                "message": f"Image generation failed: {str(img_error)}"
+            }), 500
+        
+    except Exception as e:
+        app.logger.error(f"General error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/generated-images/<filename>', methods=['GET'])
+def serve_generated_image(filename):
+    """
+    Serve generated images from the image toolkit
+    """
+    try:
+        image_path = os.path.join("src/generated_images", filename)
         if os.path.exists(image_path):
             return send_file(image_path, mimetype='image/png')
         else:
