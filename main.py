@@ -22,6 +22,15 @@ import openai  # Move openai import to top level
 # Load environment variables from .env file
 load_dotenv()
 
+# Heroku-specific configuration
+if os.environ.get('DYNO'):  # Running on Heroku
+    # Set longer timeout for Heroku
+    REQUEST_TIMEOUT = 90  # seconds
+    MAX_BOARDS = 3  # Reduce max boards for Heroku
+else:
+    REQUEST_TIMEOUT = 25  # seconds for local development
+    MAX_BOARDS = 5  # More boards allowed locally
+
 import re
 import json
 from flask import Flask, request, jsonify, send_file
@@ -480,8 +489,8 @@ def validate_storyboard_params(data):
     # Validate number_of_boards
     try:
         num_boards = int(data['number_of_boards'])
-        if num_boards < 1 or num_boards > 10:
-            return False, "number_of_boards must be between 1 and 10"
+        if num_boards < 1 or num_boards > MAX_BOARDS:
+            return False, f"number_of_boards must be between 1 and {MAX_BOARDS}"
     except (ValueError, TypeError):
         return False, "number_of_boards must be a valid integer"
     
@@ -904,10 +913,10 @@ def generate_storyboards():
         skip_images = data.get('skip_images', False)  # New parameter
         
         # Limit number of boards for Heroku to prevent timeouts
-        if number_of_boards > 5:
+        if number_of_boards > MAX_BOARDS:
             return jsonify({
                 "status": "error",
-                "message": "Maximum 5 storyboards allowed to prevent timeout"
+                "message": f"Maximum {MAX_BOARDS} storyboards allowed to prevent timeout"
             }), 400
 
         # Build task for storyboard generation
@@ -936,16 +945,17 @@ def generate_storyboards():
             team_thread.daemon = True
             team_thread.start()
             
-            # Wait for result with timeout (25 seconds)
+            # Wait for result with timeout
             try:
-                result_type, result_data = result_queue.get(timeout=25)
+                result_type, result_data = result_queue.get(timeout=REQUEST_TIMEOUT)
                 if result_type == "error":
                     raise Exception(result_data)
                 raw_output = result_data.content.strip()
             except queue.Empty:
+                app.logger.error("Storyboard generation timed out")
                 return jsonify({
                     "status": "error",
-                    "message": "Storyboard generation timed out. Please try with fewer boards."
+                    "message": f"Storyboard generation timed out after {REQUEST_TIMEOUT} seconds. Please try with fewer boards."
                 }), 408
                 
         except Exception as e:
