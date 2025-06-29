@@ -973,76 +973,64 @@ def generate_storyboards():
         # Extract storyboards from response
         storyboards = response_data.get("storyboards", [])
         
-        # Generate images for each storyboard
+        # Generate one comprehensive image for all storyboards
         final_storyboards = []
+        comprehensive_prompt = ""
+        comprehensive_image_url = None
+        comprehensive_image_path = None
+        comprehensive_filename = None
         
+        # Build comprehensive image prompt from all storyboards
         for i, storyboard in enumerate(storyboards):
+            image_prompt = storyboard.get("image_prompt", "")
+            scene_number = storyboard.get("scene_number", i + 1)
+            supporting_text = storyboard.get("supporting_text", "")
+            
+            if image_prompt:
+                comprehensive_prompt += f"Scene {scene_number}: {image_prompt}. "
+            
+            # Create storyboard structure (text only, no individual images)
+            final_storyboard = {
+                "scene_number": scene_number,
+                "image_prompt": image_prompt,
+                "supporting_text": supporting_text
+            }
+            final_storyboards.append(final_storyboard)
+        
+        # Generate one comprehensive image if we have prompts and images aren't skipped
+        if comprehensive_prompt and not skip_images:
             try:
-                image_prompt = storyboard.get("image_prompt", "")
-                scene_number = storyboard.get("scene_number", i + 1)
+                # Create a comprehensive prompt for all scenes
+                full_prompt = f"Create a storyboard with {number_of_boards} scenes: {comprehensive_prompt} Arrange them in a grid layout showing the progression of the story."
                 
-                # Create base storyboard structure
-                final_storyboard = {
-                    "scene_number": scene_number,
-                    "image_prompt": image_prompt,
-                    "supporting_text": storyboard.get("supporting_text", ""),
-                    "image_url": None,
-                    "image_path": None,
-                    "filename": None
-                }
+                image_result = image_toolkit.generate_image(
+                    prompt=full_prompt,
+                    aspect_ratio="1:1",
+                    size="1024x1024",
+                    quality="standard"
+                )
                 
-                # Try to generate image if prompt exists
-                if image_prompt and not skip_images:
-                    try:
-                        # Simple image generation without complex retry logic
-                        image_result = image_toolkit.generate_image(
-                            prompt=image_prompt,
-                            aspect_ratio="1:1",
-                            size="1024x1024",
-                            quality="standard"
-                        )
-                        
-                        # Update storyboard with image data
-                        final_storyboard.update({
-                            "image_url": image_result["image_url"],
-                            "image_path": image_result["image_path"],
-                            "filename": image_result["filename"]
-                        })
-                        
-                    except Exception as img_error:
-                        app.logger.error(f"Image generation failed for scene {scene_number}: {str(img_error)}")
-                        final_storyboard["error"] = f"Image generation failed: {str(img_error)}"
-                
-                final_storyboards.append(final_storyboard)
-                
-                # Small delay between images to avoid rate limiting
-                if i < len(storyboards) - 1:
-                    import time
-                    time.sleep(0.5)  # Reduced delay
-                
-            except Exception as e:
-                app.logger.error(f"Storyboard processing failed for scene {scene_number}: {str(e)}")
-                # Add storyboard without image if processing fails
-                final_storyboard = {
-                    "scene_number": scene_number,
-                    "image_prompt": storyboard.get("image_prompt", ""),
-                    "supporting_text": storyboard.get("supporting_text", ""),
-                    "image_url": None,
-                    "image_path": None,
-                    "filename": None,
-                    "error": f"Processing failed: {str(e)}"
-                }
-                final_storyboards.append(final_storyboard)
+                # Store the comprehensive image details
+                comprehensive_image_url = image_result["image_url"]
+                comprehensive_image_path = image_result["image_path"]
+                comprehensive_filename = image_result["filename"]
+                    
+            except Exception as img_error:
+                app.logger.error(f"Comprehensive image generation failed: {str(img_error)}")
         
         # Format the response
         return jsonify({
             "status": "success",
             "data": {
+                "image_url": comprehensive_image_url,
+                "image_path": comprehensive_image_path,
+                "filename": comprehensive_filename,
                 "storyboards": final_storyboards,
                 "metadata": {
                     "description": description,
                     "number_of_boards": number_of_boards,
-                    "total_generated": len(final_storyboards)
+                    "total_generated": len(final_storyboards),
+                    "comprehensive_image": not skip_images and comprehensive_prompt != ""
                 }
             }
         })
