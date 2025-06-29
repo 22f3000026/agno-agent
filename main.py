@@ -19,6 +19,16 @@ import io
 import datetime
 import openai  # Move openai import to top level
 
+# Try to import Appwrite SDK
+try:
+    from appwrite.client import Client
+    from appwrite.services.storage import Storage
+    from appwrite.input_file import InputFile
+    APPWRITE_AVAILABLE = True
+except ImportError:
+    APPWRITE_AVAILABLE = False
+    print("Warning: Appwrite SDK not installed. Install with: pip install appwrite")
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -73,6 +83,35 @@ TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
+# Appwrite configuration
+APPWRITE_ENDPOINT = os.environ.get("APPWRITE_ENDPOINT", "https://cloud.appwrite.io/v1")
+APPWRITE_PROJECT_ID = os.environ.get("APPWRITE_PROJECT_ID")
+APPWRITE_API_KEY = os.environ.get("APPWRITE_API_KEY")
+APPWRITE_BUCKET_ID = os.environ.get("APPWRITE_BUCKET_ID", "audiobooks")
+
+# Initialize Appwrite client
+appwrite_client = None
+appwrite_storage = None
+if APPWRITE_AVAILABLE and APPWRITE_PROJECT_ID and APPWRITE_API_KEY:
+    try:
+        appwrite_client = Client()
+        appwrite_client.set_endpoint(APPWRITE_ENDPOINT)
+        appwrite_client.set_project(APPWRITE_PROJECT_ID)
+        appwrite_client.set_key(APPWRITE_API_KEY)
+        appwrite_storage = Storage(appwrite_client)
+        print(f"Appwrite client initialized successfully for project: {APPWRITE_PROJECT_ID}")
+    except Exception as e:
+        print(f"Failed to initialize Appwrite client: {str(e)}")
+        appwrite_client = None
+        appwrite_storage = None
+else:
+    if not APPWRITE_AVAILABLE:
+        print("Appwrite SDK not available")
+    if not APPWRITE_PROJECT_ID:
+        print("APPWRITE_PROJECT_ID not set")
+    if not APPWRITE_API_KEY:
+        print("APPWRITE_API_KEY not set")
+
 # Setup Tavily toolkits
 crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
 extract_toolkit = TavilyExtractToolkit(TAVILY_API_KEY)
@@ -81,6 +120,9 @@ map_toolkit = TavilyMapToolkit(TAVILY_API_KEY)
 
 # Setup image generation toolkit
 image_toolkit = ImageGenerationToolkit(OPENAI_API_KEY)
+
+# Setup ElevenLabs toolkit
+elabs_toolkit = ElevenLabsToolkit(ELEVENLABS_API_KEY)
 
 # Create directories for storyboard images
 os.makedirs("src/storyboard_generations", exist_ok=True)
@@ -1000,8 +1042,22 @@ def generate_storyboards():
         # Generate one comprehensive image if we have prompts and images aren't skipped
         if comprehensive_prompt and not skip_images:
             try:
+                # Create grid layout based on number of boards
+                if number_of_boards == 1:
+                    layout_prompt = "single image"
+                elif number_of_boards == 2:
+                    layout_prompt = "2 panels arranged vertically (top and bottom)"
+                elif number_of_boards == 3:
+                    layout_prompt = "3 panels arranged in a triangle (top, bottom left, bottom right)"
+                elif number_of_boards == 4:
+                    layout_prompt = "4 panels arranged in a 2x2 grid (top left, top right, bottom left, bottom right)"
+                elif number_of_boards == 5:
+                    layout_prompt = "5 panels arranged in a 3x2 grid (top row: 2 panels, bottom row: 3 panels)"
+                else:
+                    layout_prompt = f"{number_of_boards} panels arranged in a grid layout"
+                
                 # Create a comprehensive prompt for all scenes
-                full_prompt = f"Create a storyboard with {number_of_boards} scenes: {comprehensive_prompt} Arrange them in a grid layout showing the progression of the story."
+                full_prompt = f"Create a storyboard with {layout_prompt}. {comprehensive_prompt} Each panel should clearly show its respective scene. Use consistent art style across all panels."
                 
                 image_result = image_toolkit.generate_image(
                     prompt=full_prompt,
@@ -1140,6 +1196,280 @@ def serve_generated_image(filename):
             }), 404
     except Exception as e:
         app.logger.error(f"Error serving image: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/audiobook-to-audio', methods=['POST', 'OPTIONS'])
+def generate_audiobook():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No JSON data provided"
+            }), 400
+        
+        # Extract parameters
+        topic = data.get('topic')
+        style = data.get('style', 'Educational')
+        duration = data.get('duration', 30)
+        voice_id = data.get('voice_id', 'JBFqnCBsd6RMkjVDRZzb')
+        
+        # Validate required parameters
+        if not topic:
+            return jsonify({
+                "status": "error",
+                "message": "Topic is required"
+            }), 400
+        
+        # Validate style
+        valid_styles = ['Educational', 'Conversational', 'Storytelling', 'Interview']
+        if style not in valid_styles:
+            return jsonify({
+                "status": "error",
+                "message": f"Style must be one of: {', '.join(valid_styles)}"
+            }), 400
+        
+        # Validate duration (in seconds)
+        if not isinstance(duration, int) or duration < 10 or duration > 300:
+            return jsonify({
+                "status": "error",
+                "message": "Duration must be between 10 and 300 seconds"
+            }), 400
+        
+        # Build task for audiobook generation
+        task = f"""
+        Topic: {topic}
+        Style: {style}
+        Duration: {duration} seconds
+        
+        Generate an audiobook script for {duration} seconds of audio content.
+        The script should be appropriate for {duration} seconds of spoken audio.
+        """
+        
+        # Run the simple audiobook team
+        try:
+            result = simple_audiobook_team.run(task)
+            raw_output = result.content.strip()
+        except Exception as e:
+            app.logger.error(f"Audiobook team execution failed: {str(e)}")
+            return jsonify({
+                "status": "error",
+                "message": f"Audiobook generation failed: {str(e)}"
+            }), 500
+        
+        # Clean up any code fences and extract JSON
+        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+        app.logger.info(f"Audiobook Team raw output: {cleaned_output}")
+        
+        # Extract JSON part from the response
+        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
+        if not json_match:
+            return jsonify({
+                "status": "error",
+                "message": "No valid JSON found in response"
+            }), 500
+        
+        json_str = json_match.group(1)
+        response_data = json.loads(json_str)
+        
+        # Extract script from response
+        script = response_data.get("script", "")
+        
+        if not script:
+            return jsonify({
+                "status": "error",
+                "message": "No script generated"
+            }), 500
+        
+        # Convert script to audio using ElevenLabs
+        try:
+            # Generate unique filename
+            filename = f"audiobook_{uuid.uuid4().hex}.mp3"
+            
+            # Use ElevenLabs toolkit to generate audio
+            audio_result = elabs_toolkit.text_to_speech(
+                text=script,
+                voice_id=voice_id,
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128",
+                filename=filename
+            )
+            
+            # Save to Appwrite storage if available
+            appwrite_file_id = None
+            appwrite_file_url = None
+            
+            app.logger.info(f"Appwrite client available: {bool(appwrite_client)}")
+            app.logger.info(f"Appwrite storage available: {bool(appwrite_storage)}")
+            app.logger.info(f"APPWRITE_PROJECT_ID: {APPWRITE_PROJECT_ID}")
+            app.logger.info(f"APPWRITE_BUCKET_ID: {APPWRITE_BUCKET_ID}")
+            
+            if appwrite_client and appwrite_storage:
+                try:
+                    app.logger.info(f"Attempting to upload file: {audio_result['audio_file']}")
+                    
+                    # Check if file exists
+                    if not os.path.exists(audio_result["audio_file"]):
+                        app.logger.error(f"Local file does not exist: {audio_result['audio_file']}")
+                        raise Exception("Local audio file not found")
+                    
+                    # Get file size
+                    file_size = os.path.getsize(audio_result["audio_file"])
+                    app.logger.info(f"File size: {file_size} bytes")
+                    
+                    # Upload to Appwrite storage
+                    appwrite_result = appwrite_storage.create_file(
+                        bucket_id=APPWRITE_BUCKET_ID,
+                        file_id=filename,
+                        file=InputFile.from_path(audio_result["audio_file"])
+                    )
+                    
+                    app.logger.info(f"Appwrite upload result: {appwrite_result}")
+                    
+                    appwrite_file_id = appwrite_result["$id"]
+                    appwrite_file_url = f"{APPWRITE_ENDPOINT}/storage/buckets/{APPWRITE_BUCKET_ID}/files/{appwrite_file_id}/view?project={APPWRITE_PROJECT_ID}"
+                    
+                    app.logger.info(f"File uploaded to Appwrite: {appwrite_file_id}")
+                    app.logger.info(f"Appwrite file URL: {appwrite_file_url}")
+                    
+                except Exception as appwrite_error:
+                    app.logger.error(f"Failed to upload to Appwrite: {str(appwrite_error)}")
+                    app.logger.error(f"Appwrite error type: {type(appwrite_error)}")
+                    import traceback
+                    app.logger.error(f"Appwrite error traceback: {traceback.format_exc()}")
+            else:
+                app.logger.warning("Appwrite client or storage not available")
+                if not APPWRITE_PROJECT_ID:
+                    app.logger.warning("APPWRITE_PROJECT_ID not set")
+                if not APPWRITE_API_KEY:
+                    app.logger.warning("APPWRITE_API_KEY not set")
+            
+            # Small delay to ensure audio is processed in history
+            import time
+            time.sleep(2)
+            
+            # Get the temporary audio URL from ElevenLabs history
+            try:
+                from elevenlabs import ElevenLabs
+                
+                # Debug: Check if API key is available
+                app.logger.info(f"ELEVENLABS_API_KEY available: {bool(ELEVENLABS_API_KEY)}")
+                app.logger.info(f"ELEVENLABS_API_KEY length: {len(ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else 0}")
+                
+                if not ELEVENLABS_API_KEY:
+                    app.logger.warning("ELEVENLABS_API_KEY is not set, skipping history lookup")
+                    # Use Appwrite URL if available, otherwise local file
+                    audio_url = appwrite_file_url or f"/audio-files/{audio_result['audio_file_name']}"
+                else:
+                    # Use ElevenLabs client to get history
+                    client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+                    history_data = client.history.list()
+                    
+                    app.logger.info(f"ElevenLabs history response: {history_data}")
+                    
+                    # Find the most recent audio for this script
+                    audio_url = None
+                    if history_data.get("history"):
+                        # Get the most recent item (should be our just-generated audio)
+                        latest_item = history_data["history"][0]
+                        
+                        app.logger.info(f"Latest history item: {latest_item}")
+                        
+                        # Look for audio_url in the history item
+                        audio_url = latest_item.get("audio_url")
+                        
+                        if audio_url:
+                            app.logger.info(f"Found ElevenLabs audio URL: {audio_url}")
+                        else:
+                            app.logger.error("No audio_url found in latest history item")
+                            app.logger.error(f"Available fields: {list(latest_item.keys())}")
+                            # Use Appwrite URL if available, otherwise local file
+                            audio_url = appwrite_file_url or f"/audio-files/{audio_result['audio_file_name']}"
+                    else:
+                        app.logger.error("No history items found in response")
+                        # Use Appwrite URL if available, otherwise local file
+                        audio_url = appwrite_file_url or f"/audio-files/{audio_result['audio_file_name']}"
+                
+                # Format the response
+                return jsonify({
+                    "status": "success",
+                    "data": {
+                        "script": script,
+                        "audio_url": audio_url,  # ElevenLabs URL, Appwrite URL, or local file URL
+                        "appwrite_file_id": appwrite_file_id,
+                        "appwrite_file_url": appwrite_file_url,
+                        "audio_file": audio_result["audio_file"],  # Local file path (backup)
+                        "audio_file_name": audio_result["audio_file_name"],
+                        "topic": topic,
+                        "style": style,
+                        "duration": duration,
+                        "voice_id": voice_id
+                    }
+                })
+                
+            except Exception as history_error:
+                app.logger.error(f"Failed to get ElevenLabs history: {str(history_error)}")
+                # Fallback to Appwrite URL or local file
+                audio_url = appwrite_file_url or f"/audio-files/{audio_result['audio_file_name']}"
+                return jsonify({
+                    "status": "success",
+                    "data": {
+                        "script": script,
+                        "audio_url": audio_url,
+                        "appwrite_file_id": appwrite_file_id,
+                        "appwrite_file_url": appwrite_file_url,
+                        "audio_file": audio_result["audio_file"],
+                        "audio_file_name": audio_result["audio_file_name"],
+                        "topic": topic,
+                        "style": style,
+                        "duration": duration,
+                        "voice_id": voice_id
+                    }
+                })
+            
+        except Exception as audio_error:
+            app.logger.error(f"Audio generation failed: {str(audio_error)}")
+            return jsonify({
+                "status": "error",
+                "message": f"Audio generation failed: {str(audio_error)}"
+            }), 500
+        
+    except json.JSONDecodeError as e:
+        app.logger.error(f"JSON decode failed: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": "Invalid JSON returned by team"
+        }), 500
+        
+    except Exception as e:
+        app.logger.error(f"General error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/audio-files/<filename>', methods=['GET'])
+def serve_audio_file(filename):
+    """
+    Serve generated audio files
+    """
+    try:
+        audio_path = os.path.join("audio_generations", filename)
+        if os.path.exists(audio_path):
+            return send_file(audio_path, mimetype='audio/mpeg')
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Audio file not found"
+            }), 404
+    except Exception as e:
+        app.logger.error(f"Error serving audio file: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
