@@ -901,6 +901,13 @@ def generate_storyboards():
         
         description = data.get('description')
         number_of_boards = int(data.get('number_of_boards'))
+        
+        # Limit number of boards for Heroku to prevent timeouts
+        if number_of_boards > 5:
+            return jsonify({
+                "status": "error",
+                "message": "Maximum 5 storyboards allowed to prevent timeout"
+            }), 400
 
         # Build task for storyboard generation
         task = f"""
@@ -911,10 +918,28 @@ def generate_storyboards():
         Each scene should have an image prompt and supporting text.
         """
         
-        # Run the storyboard team
+        # Run the storyboard team with timeout
         try:
-            result = storyboard_team.run(task)
-            raw_output = result.content.strip()
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Storyboard generation timed out")
+            
+            # Set timeout for storyboard generation (30 seconds)
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(30)
+            
+            try:
+                result = storyboard_team.run(task)
+                signal.alarm(0)  # Cancel the alarm
+                raw_output = result.content.strip()
+            except TimeoutError:
+                signal.alarm(0)  # Cancel the alarm
+                return jsonify({
+                    "status": "error",
+                    "message": "Storyboard generation timed out. Please try with fewer boards."
+                }), 408
+                
         except Exception as e:
             app.logger.error(f"Storyboard team execution failed: {str(e)}")
             return jsonify({
@@ -925,7 +950,7 @@ def generate_storyboards():
         # Clean up any code fences and extract JSON
         cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
         app.logger.info(f"Storyboard Team raw output: {cleaned_output}")
-        
+
         # Extract JSON part from the response
         json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
         if not json_match:
@@ -933,7 +958,7 @@ def generate_storyboards():
                 "status": "error",
                 "message": "No valid JSON found in response"
             }), 500
-        
+
         json_str = json_match.group(1)
         response_data = json.loads(json_str)
         
@@ -943,21 +968,40 @@ def generate_storyboards():
         # Generate images for each storyboard
         final_storyboards = []
         
-        for storyboard in storyboards:
+        for i, storyboard in enumerate(storyboards):
             try:
                 image_prompt = storyboard.get("image_prompt", "")
-                scene_number = storyboard.get("scene_number", 1)
+                scene_number = storyboard.get("scene_number", i + 1)
                 
                 if image_prompt:
-                    # Generate image using the toolkit
-                    try:
-                        image_result = image_toolkit.generate_image(
-                            prompt=image_prompt,
-                            aspect_ratio="1:1",
-                            size="1024x1024",
-                            quality="standard"
-                        )
-                        
+                    # Generate image using the toolkit with retry logic
+                    max_retries = 3
+                    retry_count = 0
+                    image_result = None
+                    
+                    while retry_count < max_retries and image_result is None:
+                        try:
+                            # Add delay between retries to avoid rate limiting
+                            if retry_count > 0:
+                                import time
+                                time.sleep(2 * retry_count)  # Exponential backoff
+                            
+                            image_result = image_toolkit.generate_image(
+                                prompt=image_prompt,
+                                aspect_ratio="1:1",
+                                size="1024x1024",
+                                quality="standard"
+                            )
+                            
+                        except Exception as img_error:
+                            retry_count += 1
+                            app.logger.warning(f"Image generation attempt {retry_count} failed for scene {scene_number}: {str(img_error)}")
+                            
+                            if retry_count >= max_retries:
+                                app.logger.error(f"All image generation attempts failed for scene {scene_number}")
+                                image_result = None
+                    
+                    if image_result:
                         final_storyboard = {
                             "scene_number": scene_number,
                             "image_prompt": image_prompt,
@@ -966,9 +1010,8 @@ def generate_storyboards():
                             "image_path": image_result["image_path"],
                             "filename": image_result["filename"]
                         }
-                    except Exception as img_error:
-                        app.logger.error(f"Image generation failed for scene {scene_number}: {str(img_error)}")
-                        # Fallback to storyboard without image
+                    else:
+                        # Fallback to storyboard without image after all retries failed
                         final_storyboard = {
                             "scene_number": scene_number,
                             "image_prompt": image_prompt,
@@ -976,7 +1019,7 @@ def generate_storyboards():
                             "image_url": None,
                             "image_path": None,
                             "filename": None,
-                            "error": f"Image generation failed: {str(img_error)}"
+                            "error": "Image generation failed after multiple attempts"
                         }
                 else:
                     # Create storyboard without image if no prompt
@@ -990,6 +1033,11 @@ def generate_storyboards():
                     }
                 
                 final_storyboards.append(final_storyboard)
+                
+                # Add small delay between image generations to avoid rate limiting
+                if i < len(storyboards) - 1:  # Don't delay after the last one
+                    import time
+                    time.sleep(1)
                 
             except Exception as e:
                 app.logger.error(f"Storyboard processing failed for scene {scene_number}: {str(e)}")
