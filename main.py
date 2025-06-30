@@ -6,8 +6,10 @@ from flask_cors import CORS
 from agno.agent import Agent
 from agno.team import Team
 from agno.models.openai import OpenAIChat
+from agno.tools.eleven_labs import ElevenLabsTools
 from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit, TavilyMapToolkit
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from elabs_toolkit import ElevenLabsToolkit
 from image_toolkit import ImageGenerationToolkit
 import uuid
 import requests
@@ -27,7 +29,9 @@ from flask_cors import CORS
 from agno.agent import Agent
 from agno.team import Team
 from agno.models.openai import OpenAIChat
+from agno.tools.eleven_labs import ElevenLabsTools
 from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit, TavilyMapToolkit
+from elabs_toolkit import ElevenLabsToolkit
 
 app = Flask(__name__)
 
@@ -66,6 +70,7 @@ else:
 
 # Get API keys
 TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # Setup Tavily toolkits
@@ -76,6 +81,9 @@ map_toolkit = TavilyMapToolkit(TAVILY_API_KEY)
 
 # Setup image generation toolkit
 image_toolkit = ImageGenerationToolkit(OPENAI_API_KEY)
+
+# Setup ElevenLabs toolkit
+elabs_toolkit = ElevenLabsToolkit(ELEVENLABS_API_KEY)
 
 # Create directories for storyboard images
 os.makedirs("src/storyboard_generations", exist_ok=True)
@@ -127,6 +135,41 @@ quiz_agent = Agent(
         "For medium questions, include some analysis and understanding. "
         "For hard questions, include complex concepts and critical thinking. "
         "No explanations or markdown. Only valid JSON."
+    ),
+    model=OpenAIChat("gpt-4o"),
+)
+
+
+audiobook_agent = Agent(
+    name="Audiobook Agent",
+    role=(
+        "You are an audiobook script generator. "
+        "Given a topic, storytelling style, and duration, generate a script for an audiobook. "
+        "The script should be structured according to the requested style: "
+        "- Educational: informative and structured\n"
+        "- Conversational: casual and engaging\n"
+        "- Storytelling: narrative and immersive\n"
+        "- Interview: Q&A format\n"
+        "The script must be the correct length for the requested duration (e.g., 5 minutes of spoken audio, not more or less). "
+        "Always return valid JSON: {\"script\": \"...\"}. No explanations or markdown."
+    ),
+    model=OpenAIChat("gpt-4o"),
+)
+
+# Create a simpler audiobook agent that doesn't gather external content
+simple_audiobook_agent = Agent(
+    name="Simple Audiobook Agent",
+    role=(
+        "You are an audiobook script generator. "
+        "Generate a script based on the given topic, style, and duration. "
+        "Do NOT gather external information - create content based on your knowledge. "
+        "The script should be structured according to the requested style: "
+        "- Educational: informative and structured\n"
+        "- Conversational: casual and engaging\n"
+        "- Storytelling: narrative and immersive\n"
+        "- Interview: Q&A format\n"
+        "The script must be the correct length for the requested duration. "
+        "Always return valid JSON: {\"script\": \"...\"}. No explanations or markdown."
     ),
     model=OpenAIChat("gpt-4o"),
 )
@@ -266,6 +309,66 @@ tavily_quiz_team = Team(
     - Final output is valid JSON with the quiz.
     """,
     show_tool_calls=True
+)
+
+audiobook_team = Team(
+    name="Audiobook Team",
+    mode="coordinate",
+    model=OpenAIChat("gpt-4o"),
+    members=[tavily_agent, audiobook_agent],
+    show_members_responses=True,
+    instructions=[
+        "Tavily Agent gathers information on the topic.",
+        "Audiobook Agent generates a script in the requested style and duration.",
+        "Audio Agent converts the script to audio.",
+        "Return final JSON with the audio file path.",
+        "No markdown, explanations, or extra text — only valid JSON."
+    ],
+    success_criteria="""
+    - Tavily Agent gathers relevant content.
+    - Audiobook Agent produces a script matching the topic, style, and duration.
+    - Audio Agent generates audio from the script.
+    - Final output is valid JSON with the audio file path.
+    """
+)
+
+# Simple audiobook team that doesn't gather external content
+simple_audiobook_team = Team(
+    name="Simple Audiobook Team",
+    mode="coordinate",
+    model=OpenAIChat("gpt-4o"),
+    members=[simple_audiobook_agent],
+    show_members_responses=True,
+    instructions=[
+        "Generate an audiobook script based on the topic, style, and duration.",
+        "Do not gather external information - create content based on knowledge.",
+        "Return final JSON with the script.",
+        "No markdown, explanations, or extra text — only valid JSON."
+    ],
+    success_criteria="""
+    - Generate a script matching the topic, style, and duration.
+    - Script is appropriate length for the requested duration.
+    - Final output is valid JSON with the script.
+    """
+)
+
+storyboard_team = Team(
+    name="Storyboard Generation Team",
+    mode="coordinate",
+    model=OpenAIChat("gpt-4o"),
+    members=[storyboard_content_agent],
+    show_members_responses=True,
+    instructions=[
+        "Create {number_of_boards} storyboard scenes for the given topic.",
+        "Each scene should have an image prompt and supporting text.",
+        "Return final JSON with complete storyboard data.",
+        "No markdown, explanations, or extra text — only valid JSON."
+    ],
+    success_criteria="""
+    - Create the requested number of storyboard scenes.
+    - Each storyboard has scene_number, image_prompt, and supporting_text.
+    - Final output is valid JSON with complete storyboard data.
+    """
 )
 
 # Helper
@@ -1059,3 +1162,219 @@ def serve_generated_image(filename):
             "message": str(e)
         }), 500
 
+@app.route('/audiobook-to-audio', methods=['POST', 'OPTIONS'])
+def generate_audiobook():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No JSON data provided"
+            }), 400
+        
+        # Extract parameters
+        topic = data.get('topic')
+        style = data.get('style', 'Educational')
+        duration = data.get('duration', 30)
+        voice_id = data.get('voice_id', 'JBFqnCBsd6RMkjVDRZzb')
+        
+        # Validate required parameters
+        if not topic:
+            return jsonify({
+                "status": "error",
+                "message": "Topic is required"
+            }), 400
+        
+        # Validate style
+        valid_styles = ['Educational', 'Conversational', 'Storytelling', 'Interview']
+        if style not in valid_styles:
+            return jsonify({
+                "status": "error",
+                "message": f"Style must be one of: {', '.join(valid_styles)}"
+            }), 400
+        
+        # Validate duration (in seconds)
+        if not isinstance(duration, int) or duration < 10 or duration > 300:
+            return jsonify({
+                "status": "error",
+                "message": "Duration must be between 10 and 300 seconds"
+            }), 400
+        
+        # Build task for audiobook generation
+        task = f"""
+        Topic: {topic}
+        Style: {style}
+        Duration: {duration} seconds
+        
+        Generate an audiobook script for {duration} seconds of audio content.
+        The script should be appropriate for {duration} seconds of spoken audio.
+        """
+        
+        # Run the simple audiobook team
+        try:
+            result = simple_audiobook_team.run(task)
+            raw_output = result.content.strip()
+        except Exception as e:
+            app.logger.error(f"Audiobook team execution failed: {str(e)}")
+            return jsonify({
+                "status": "error",
+                "message": f"Audiobook generation failed: {str(e)}"
+            }), 500
+        
+        # Clean up any code fences and extract JSON
+        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
+        app.logger.info(f"Audiobook Team raw output: {cleaned_output}")
+        
+        # Extract JSON part from the response
+        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
+        if not json_match:
+            return jsonify({
+                "status": "error",
+                "message": "No valid JSON found in response"
+            }), 500
+        
+        json_str = json_match.group(1)
+        response_data = json.loads(json_str)
+        
+        # Extract script from response
+        script = response_data.get("script", "")
+        
+        if not script:
+            return jsonify({
+                "status": "error",
+                "message": "No script generated"
+            }), 500
+        
+        # Convert script to audio using ElevenLabs
+        try:
+            # Generate unique filename
+            filename = f"audiobook_{uuid.uuid4().hex}.mp3"
+            
+            # Use ElevenLabs toolkit to generate audio
+            audio_result = elabs_toolkit.text_to_speech(
+                text=script,
+                voice_id=voice_id,
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128",
+                filename=filename
+            )
+            
+            # Small delay to ensure audio is processed in history
+            import time
+            time.sleep(2)
+            
+            # Get the temporary audio URL from ElevenLabs history
+            try:
+                from elevenlabs import ElevenLabs
+                
+                # Use ElevenLabs client to get history
+                client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+                history_data = client.history.list()
+                
+                app.logger.info(f"ElevenLabs history response: {history_data}")
+                
+                # Find the most recent audio for this script
+                audio_url = None
+                if history_data.get("history"):
+                    # Get the most recent item (should be our just-generated audio)
+                    latest_item = history_data["history"][0]
+                    history_item_id = latest_item.get("history_item_id")
+                    
+                    app.logger.info(f"Latest history item: {latest_item}")
+                    app.logger.info(f"History item ID: {history_item_id}")
+                    
+                    if history_item_id:
+                        # Try to get a shareable URL or use the local file path
+                        # The history endpoint returns binary audio, not a URL
+                        # So we'll use the local file path as the primary audio source
+                        audio_url = f"/audio-files/{audio_result['audio_file_name']}"
+                        app.logger.info(f"Using local audio URL: {audio_url}")
+                    else:
+                        app.logger.error("No history_item_id found in latest item")
+                else:
+                    app.logger.error("No history items found in response")
+                
+                # Format the response
+                return jsonify({
+                    "status": "success",
+                    "data": {
+                        "script": script,
+                        "audio_url": audio_url,  # Local file URL
+                        "audio_file": audio_result["audio_file"],  # Local file path
+                        "audio_file_name": audio_result["audio_file_name"],
+                        "topic": topic,
+                        "style": style,
+                        "duration": duration,
+                        "voice_id": voice_id
+                    }
+                })
+                
+            except Exception as history_error:
+                app.logger.error(f"Failed to get ElevenLabs history: {str(history_error)}")
+                # Fallback to local file response
+                return jsonify({
+                    "status": "success",
+                    "data": {
+                        "script": script,
+                        "audio_url": f"/audio-files/{audio_result['audio_file_name']}",  # Local file URL
+                        "audio_file": audio_result["audio_file"],
+                        "audio_file_name": audio_result["audio_file_name"],
+                        "topic": topic,
+                        "style": style,
+                        "duration": duration,
+                        "voice_id": voice_id
+                    }
+                })
+            
+        except Exception as audio_error:
+            app.logger.error(f"Audio generation failed: {str(audio_error)}")
+            return jsonify({
+                "status": "error",
+                "message": f"Audio generation failed: {str(audio_error)}"
+            }), 500
+        
+    except json.JSONDecodeError as e:
+        app.logger.error(f"JSON decode failed: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": "Invalid JSON returned by team"
+        }), 500
+        
+    except Exception as e:
+        app.logger.error(f"General error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/audio-files/<filename>', methods=['GET'])
+def serve_audio_file(filename):
+    """
+    Serve generated audio files
+    """
+    try:
+        audio_path = os.path.join("audio_generations", filename)
+        if os.path.exists(audio_path):
+            return send_file(audio_path, mimetype='audio/mpeg')
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Audio file not found"
+            }), 404
+    except Exception as e:
+        app.logger.error(f"Error serving audio file: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+if __name__ == '__main__':
+    # Enable debug mode for development
+    app.debug = True
+    
+    # Set host to 0.0.0.0 to allow external connections
+    # Set port to 5000 (default Flask port)
+    app.run(host='0.0.0.0', port=5000, debug=True)
