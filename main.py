@@ -66,6 +66,7 @@ else:
 
 # Get API keys
 TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # Setup Tavily toolkits
 crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
@@ -74,7 +75,10 @@ search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 map_toolkit = TavilyMapToolkit(TAVILY_API_KEY)
 
 # Setup image generation toolkit
-image_toolkit = ImageGenerationToolkit(TAVILY_API_KEY)
+image_toolkit = ImageGenerationToolkit(OPENAI_API_KEY)
+
+# Create directories for storyboard images
+os.makedirs("src/storyboard_generations", exist_ok=True)
 
 # Agents
 tavily_agent = Agent(
@@ -122,6 +126,59 @@ quiz_agent = Agent(
         "For easy questions, focus on basic facts and definitions. "
         "For medium questions, include some analysis and understanding. "
         "For hard questions, include complex concepts and critical thinking. "
+        "No explanations or markdown. Only valid JSON."
+    ),
+    model=OpenAIChat("gpt-4o"),
+)
+
+# Storyboard Agents
+storyboard_content_agent = Agent(
+    name="Storyboard Content Agent",
+    role=(
+        "You are a storyboard creator. "
+        "Given a topic and number of scenes, create simple storyboard content. "
+        "Each storyboard should have: "
+        "- A clear image prompt for generating a visual "
+        "- Supporting text that describes the scene "
+        "Always return valid JSON: {\"storyboards\": [{\"scene_number\": 1, \"image_prompt\": \"...\", \"supporting_text\": \"...\"}]}. "
+        "No explanations or markdown. Only valid JSON."
+    ),
+    model=OpenAIChat("gpt-4o"),
+)
+
+image_agent = Agent(
+    name="Image Generation Agent",
+    role=(
+        "You are an image generation specialist. "
+        "Given an image prompt, generate a high-quality image using DALL-E 3. "
+        "Return the image URL as a simple string. "
+        "No JSON formatting, just the URL."
+    ),
+    model=OpenAIChat("gpt-4o"),
+    tools=[image_toolkit],
+)
+
+note_agent = Agent(
+    name="Note Agent",
+    role=(
+        "You are a note-taking specialist. "
+        "Given extracted content, generate detailed and structured notes as JSON: "
+        '{"notes": {"title": "...", "key_points": ["...", "..."], "detailed_summary": "..."}}'
+        "The notes should be comprehensive, well-organized, and capture the most important information. "
+        "Key points should be a list of bullet points. "
+        "The detailed summary should be a few paragraphs. "
+        "No explanations or markdown. Only valid JSON."
+    ),
+    model=OpenAIChat("gpt-4o"),
+)
+
+brainstorm_agent = Agent(
+    name="Brainstorm Agent",
+    role=(
+        "You are a creative brainstorming assistant. "
+        "Given a topic, problem, or prompt, generate a list of creative ideas, solutions, or approaches as JSON: "
+        '{"ideas": ["...", "...", "..."]}'
+        "Ideas should be diverse, actionable, and inspiring. "
         "No explanations or markdown. Only valid JSON."
     ),
     model=OpenAIChat("gpt-4o"),
@@ -1002,10 +1059,3 @@ def serve_generated_image(filename):
             "message": str(e)
         }), 500
 
-if __name__ == '__main__':
-    # Enable debug mode for development
-    app.debug = True
-    
-    # Set host to 0.0.0.0 to allow external connections
-    # Set port to 5000 (default Flask port)
-    app.run(host='0.0.0.0', port=5000, debug=True)
