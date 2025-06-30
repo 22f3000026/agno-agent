@@ -6,10 +6,8 @@ from flask_cors import CORS
 from agno.agent import Agent
 from agno.team import Team
 from agno.models.openai import OpenAIChat
-from agno.tools.eleven_labs import ElevenLabsTools
 from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit, TavilyMapToolkit
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from elabs_toolkit import ElevenLabsToolkit
 from image_toolkit import ImageGenerationToolkit
 import uuid
 import requests
@@ -18,16 +16,6 @@ from PIL import Image
 import io
 import datetime
 import openai  # Move openai import to top level
-
-# Try to import Appwrite SDK
-try:
-    from appwrite.client import Client
-    from appwrite.services.storage import Storage
-    from appwrite.input_file import InputFile
-    APPWRITE_AVAILABLE = True
-except ImportError:
-    APPWRITE_AVAILABLE = False
-    print("Warning: Appwrite SDK not installed. Install with: pip install appwrite")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -39,9 +27,7 @@ from flask_cors import CORS
 from agno.agent import Agent
 from agno.team import Team
 from agno.models.openai import OpenAIChat
-from agno.tools.eleven_labs import ElevenLabsTools
 from tavily_toolkit import TavilyCrawlToolkit, TavilyExtractToolkit, TavilySearchToolkit, TavilyMapToolkit
-from elabs_toolkit import ElevenLabsToolkit
 
 app = Flask(__name__)
 
@@ -80,37 +66,6 @@ else:
 
 # Get API keys
 TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-
-# Appwrite configuration
-APPWRITE_ENDPOINT = os.environ.get("APPWRITE_ENDPOINT", "https://cloud.appwrite.io/v1")
-APPWRITE_PROJECT_ID = os.environ.get("APPWRITE_PROJECT_ID")
-APPWRITE_API_KEY = os.environ.get("APPWRITE_API_KEY")
-APPWRITE_BUCKET_ID = os.environ.get("APPWRITE_BUCKET_ID", "audiobooks")
-
-# Initialize Appwrite client
-appwrite_client = None
-appwrite_storage = None
-if APPWRITE_AVAILABLE and APPWRITE_PROJECT_ID and APPWRITE_API_KEY:
-    try:
-        appwrite_client = Client()
-        appwrite_client.set_endpoint(APPWRITE_ENDPOINT)
-        appwrite_client.set_project(APPWRITE_PROJECT_ID)
-        appwrite_client.set_key(APPWRITE_API_KEY)
-        appwrite_storage = Storage(appwrite_client)
-        print(f"Appwrite client initialized successfully for project: {APPWRITE_PROJECT_ID}")
-    except Exception as e:
-        print(f"Failed to initialize Appwrite client: {str(e)}")
-        appwrite_client = None
-        appwrite_storage = None
-else:
-    if not APPWRITE_AVAILABLE:
-        print("Appwrite SDK not available")
-    if not APPWRITE_PROJECT_ID:
-        print("APPWRITE_PROJECT_ID not set")
-    if not APPWRITE_API_KEY:
-        print("APPWRITE_API_KEY not set")
 
 # Setup Tavily toolkits
 crawl_toolkit = TavilyCrawlToolkit(TAVILY_API_KEY)
@@ -119,13 +74,7 @@ search_toolkit = TavilySearchToolkit(TAVILY_API_KEY)
 map_toolkit = TavilyMapToolkit(TAVILY_API_KEY)
 
 # Setup image generation toolkit
-image_toolkit = ImageGenerationToolkit(OPENAI_API_KEY)
-
-# Setup ElevenLabs toolkit
-elabs_toolkit = ElevenLabsToolkit(ELEVENLABS_API_KEY)
-
-# Create directories for storyboard images
-os.makedirs("src/storyboard_generations", exist_ok=True)
+image_toolkit = ImageGenerationToolkit(TAVILY_API_KEY)
 
 # Agents
 tavily_agent = Agent(
@@ -173,94 +122,6 @@ quiz_agent = Agent(
         "For easy questions, focus on basic facts and definitions. "
         "For medium questions, include some analysis and understanding. "
         "For hard questions, include complex concepts and critical thinking. "
-        "No explanations or markdown. Only valid JSON."
-    ),
-    model=OpenAIChat("gpt-4o"),
-)
-
-
-audiobook_agent = Agent(
-    name="Audiobook Agent",
-    role=(
-        "You are an audiobook script generator. "
-        "Given a topic, storytelling style, and duration, generate a script for an audiobook. "
-        "The script should be structured according to the requested style: "
-        "- Educational: informative and structured\n"
-        "- Conversational: casual and engaging\n"
-        "- Storytelling: narrative and immersive\n"
-        "- Interview: Q&A format\n"
-        "The script must be the correct length for the requested duration (e.g., 5 minutes of spoken audio, not more or less). "
-        "Always return valid JSON: {\"script\": \"...\"}. No explanations or markdown."
-    ),
-    model=OpenAIChat("gpt-4o"),
-)
-
-# Create a simpler audiobook agent that doesn't gather external content
-simple_audiobook_agent = Agent(
-    name="Simple Audiobook Agent",
-    role=(
-        "You are an audiobook script generator. "
-        "Generate a script based on the given topic, style, and duration. "
-        "Do NOT gather external information - create content based on your knowledge. "
-        "The script should be structured according to the requested style: "
-        "- Educational: informative and structured\n"
-        "- Conversational: casual and engaging\n"
-        "- Storytelling: narrative and immersive\n"
-        "- Interview: Q&A format\n"
-        "The script must be the correct length for the requested duration. "
-        "Always return valid JSON: {\"script\": \"...\"}. No explanations or markdown."
-    ),
-    model=OpenAIChat("gpt-4o"),
-)
-
-# Storyboard Agents
-storyboard_content_agent = Agent(
-    name="Storyboard Content Agent",
-    role=(
-        "You are a storyboard creator. "
-        "Given a topic and number of scenes, create simple storyboard content. "
-        "Each storyboard should have: "
-        "- A clear image prompt for generating a visual "
-        "- Supporting text that describes the scene "
-        "Always return valid JSON: {\"storyboards\": [{\"scene_number\": 1, \"image_prompt\": \"...\", \"supporting_text\": \"...\"}]}. "
-        "No explanations or markdown. Only valid JSON."
-    ),
-    model=OpenAIChat("gpt-4o"),
-)
-
-image_agent = Agent(
-    name="Image Generation Agent",
-    role=(
-        "You are an image generation specialist. "
-        "Given an image prompt, generate a high-quality image using DALL-E 3. "
-        "Return the image URL as a simple string. "
-        "No JSON formatting, just the URL."
-    ),
-    model=OpenAIChat("gpt-4o"),
-    tools=[image_toolkit],
-)
-
-note_agent = Agent(
-    name="Note Agent",
-    role=(
-        "You are a note-taking specialist. "
-        "Given extracted content, generate detailed and structured notes as JSON: "
-        '{"notes": {"title": "...", "key_points": ["...", "..."], "detailed_summary": "..."}}'
-        "The notes should be comprehensive, well-organized, and capture the most important information. "
-        "Key points should be a list of bullet points. "
-        "The detailed summary should be a few paragraphs. "
-        "No explanations or markdown. Only valid JSON."
-    ),
-    model=OpenAIChat("gpt-4o"),
-)
-
-brainstorm_agent = Agent(
-    name="Brainstorm Agent",
-    role=(
-        "You are a creative brainstorming assistant. "
-        "Given a topic, problem, or prompt, generate a list of creative ideas, solutions, or approaches as JSON: "
-        '{"ideas": ["...", "...", "..."]}'
-        "Ideas should be diverse, actionable, and inspiring. "
         "No explanations or markdown. Only valid JSON."
     ),
     model=OpenAIChat("gpt-4o"),
@@ -348,66 +209,6 @@ tavily_quiz_team = Team(
     - Final output is valid JSON with the quiz.
     """,
     show_tool_calls=True
-)
-
-audiobook_team = Team(
-    name="Audiobook Team",
-    mode="coordinate",
-    model=OpenAIChat("gpt-4o"),
-    members=[tavily_agent, audiobook_agent],
-    show_members_responses=True,
-    instructions=[
-        "Tavily Agent gathers information on the topic.",
-        "Audiobook Agent generates a script in the requested style and duration.",
-        "Audio Agent converts the script to audio.",
-        "Return final JSON with the audio file path.",
-        "No markdown, explanations, or extra text — only valid JSON."
-    ],
-    success_criteria="""
-    - Tavily Agent gathers relevant content.
-    - Audiobook Agent produces a script matching the topic, style, and duration.
-    - Audio Agent generates audio from the script.
-    - Final output is valid JSON with the audio file path.
-    """
-)
-
-# Simple audiobook team that doesn't gather external content
-simple_audiobook_team = Team(
-    name="Simple Audiobook Team",
-    mode="coordinate",
-    model=OpenAIChat("gpt-4o"),
-    members=[simple_audiobook_agent],
-    show_members_responses=True,
-    instructions=[
-        "Generate an audiobook script based on the topic, style, and duration.",
-        "Do not gather external information - create content based on knowledge.",
-        "Return final JSON with the script.",
-        "No markdown, explanations, or extra text — only valid JSON."
-    ],
-    success_criteria="""
-    - Generate a script matching the topic, style, and duration.
-    - Script is appropriate length for the requested duration.
-    - Final output is valid JSON with the script.
-    """
-)
-
-storyboard_team = Team(
-    name="Storyboard Generation Team",
-    mode="coordinate",
-    model=OpenAIChat("gpt-4o"),
-    members=[storyboard_content_agent],
-    show_members_responses=True,
-    instructions=[
-        "Create {number_of_boards} storyboard scenes for the given topic.",
-        "Each scene should have an image prompt and supporting text.",
-        "Return final JSON with complete storyboard data.",
-        "No markdown, explanations, or extra text — only valid JSON."
-    ],
-    success_criteria="""
-    - Create the requested number of storyboard scenes.
-    - Each storyboard has scene_number, image_prompt, and supporting_text.
-    - Final output is valid JSON with complete storyboard data.
-    """
 )
 
 # Helper
@@ -1196,280 +997,6 @@ def serve_generated_image(filename):
             }), 404
     except Exception as e:
         app.logger.error(f"Error serving image: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/audiobook-to-audio', methods=['POST', 'OPTIONS'])
-def generate_audiobook():
-    if request.method == 'OPTIONS':
-        return '', 200
-        
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No JSON data provided"
-            }), 400
-        
-        # Extract parameters
-        topic = data.get('topic')
-        style = data.get('style', 'Educational')
-        duration = data.get('duration', 30)
-        voice_id = data.get('voice_id', 'JBFqnCBsd6RMkjVDRZzb')
-        
-        # Validate required parameters
-        if not topic:
-            return jsonify({
-                "status": "error",
-                "message": "Topic is required"
-            }), 400
-        
-        # Validate style
-        valid_styles = ['Educational', 'Conversational', 'Storytelling', 'Interview']
-        if style not in valid_styles:
-            return jsonify({
-                "status": "error",
-                "message": f"Style must be one of: {', '.join(valid_styles)}"
-            }), 400
-        
-        # Validate duration (in seconds)
-        if not isinstance(duration, int) or duration < 10 or duration > 300:
-            return jsonify({
-                "status": "error",
-                "message": "Duration must be between 10 and 300 seconds"
-            }), 400
-        
-        # Build task for audiobook generation
-        task = f"""
-        Topic: {topic}
-        Style: {style}
-        Duration: {duration} seconds
-        
-        Generate an audiobook script for {duration} seconds of audio content.
-        The script should be appropriate for {duration} seconds of spoken audio.
-        """
-        
-        # Run the simple audiobook team
-        try:
-            result = simple_audiobook_team.run(task)
-            raw_output = result.content.strip()
-        except Exception as e:
-            app.logger.error(f"Audiobook team execution failed: {str(e)}")
-            return jsonify({
-                "status": "error",
-                "message": f"Audiobook generation failed: {str(e)}"
-            }), 500
-        
-        # Clean up any code fences and extract JSON
-        cleaned_output = re.sub(r"^```json|^```|```$", "", raw_output, flags=re.MULTILINE).strip()
-        app.logger.info(f"Audiobook Team raw output: {cleaned_output}")
-        
-        # Extract JSON part from the response
-        json_match = re.search(r'(\{.*\})', cleaned_output, re.DOTALL)
-        if not json_match:
-            return jsonify({
-                "status": "error",
-                "message": "No valid JSON found in response"
-            }), 500
-        
-        json_str = json_match.group(1)
-        response_data = json.loads(json_str)
-        
-        # Extract script from response
-        script = response_data.get("script", "")
-        
-        if not script:
-            return jsonify({
-                "status": "error",
-                "message": "No script generated"
-            }), 500
-        
-        # Convert script to audio using ElevenLabs
-        try:
-            # Generate unique filename
-            filename = f"audiobook_{uuid.uuid4().hex}.mp3"
-            
-            # Use ElevenLabs toolkit to generate audio
-            audio_result = elabs_toolkit.text_to_speech(
-                text=script,
-                voice_id=voice_id,
-                model_id="eleven_multilingual_v2",
-                output_format="mp3_44100_128",
-                filename=filename
-            )
-            
-            # Save to Appwrite storage if available
-            appwrite_file_id = None
-            appwrite_file_url = None
-            
-            app.logger.info(f"Appwrite client available: {bool(appwrite_client)}")
-            app.logger.info(f"Appwrite storage available: {bool(appwrite_storage)}")
-            app.logger.info(f"APPWRITE_PROJECT_ID: {APPWRITE_PROJECT_ID}")
-            app.logger.info(f"APPWRITE_BUCKET_ID: {APPWRITE_BUCKET_ID}")
-            
-            if appwrite_client and appwrite_storage:
-                try:
-                    app.logger.info(f"Attempting to upload file: {audio_result['audio_file']}")
-                    
-                    # Check if file exists
-                    if not os.path.exists(audio_result["audio_file"]):
-                        app.logger.error(f"Local file does not exist: {audio_result['audio_file']}")
-                        raise Exception("Local audio file not found")
-                    
-                    # Get file size
-                    file_size = os.path.getsize(audio_result["audio_file"])
-                    app.logger.info(f"File size: {file_size} bytes")
-                    
-                    # Upload to Appwrite storage
-                    appwrite_result = appwrite_storage.create_file(
-                        bucket_id=APPWRITE_BUCKET_ID,
-                        file_id=filename,
-                        file=InputFile.from_path(audio_result["audio_file"])
-                    )
-                    
-                    app.logger.info(f"Appwrite upload result: {appwrite_result}")
-                    
-                    appwrite_file_id = appwrite_result["$id"]
-                    appwrite_file_url = f"{APPWRITE_ENDPOINT}/storage/buckets/{APPWRITE_BUCKET_ID}/files/{appwrite_file_id}/view?project={APPWRITE_PROJECT_ID}"
-                    
-                    app.logger.info(f"File uploaded to Appwrite: {appwrite_file_id}")
-                    app.logger.info(f"Appwrite file URL: {appwrite_file_url}")
-                    
-                except Exception as appwrite_error:
-                    app.logger.error(f"Failed to upload to Appwrite: {str(appwrite_error)}")
-                    app.logger.error(f"Appwrite error type: {type(appwrite_error)}")
-                    import traceback
-                    app.logger.error(f"Appwrite error traceback: {traceback.format_exc()}")
-            else:
-                app.logger.warning("Appwrite client or storage not available")
-                if not APPWRITE_PROJECT_ID:
-                    app.logger.warning("APPWRITE_PROJECT_ID not set")
-                if not APPWRITE_API_KEY:
-                    app.logger.warning("APPWRITE_API_KEY not set")
-            
-            # Small delay to ensure audio is processed in history
-            import time
-            time.sleep(2)
-            
-            # Get the temporary audio URL from ElevenLabs history
-            try:
-                from elevenlabs import ElevenLabs
-                
-                # Debug: Check if API key is available
-                app.logger.info(f"ELEVENLABS_API_KEY available: {bool(ELEVENLABS_API_KEY)}")
-                app.logger.info(f"ELEVENLABS_API_KEY length: {len(ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else 0}")
-                
-                if not ELEVENLABS_API_KEY:
-                    app.logger.warning("ELEVENLABS_API_KEY is not set, skipping history lookup")
-                    # Use Appwrite URL if available, otherwise local file
-                    audio_url = appwrite_file_url or f"/audio-files/{audio_result['audio_file_name']}"
-                else:
-                    # Use ElevenLabs client to get history
-                    client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-                    history_data = client.history.list()
-                    
-                    app.logger.info(f"ElevenLabs history response: {history_data}")
-                    
-                    # Find the most recent audio for this script
-                    audio_url = None
-                    if history_data.get("history"):
-                        # Get the most recent item (should be our just-generated audio)
-                        latest_item = history_data["history"][0]
-                        
-                        app.logger.info(f"Latest history item: {latest_item}")
-                        
-                        # Look for audio_url in the history item
-                        audio_url = latest_item.get("audio_url")
-                        
-                        if audio_url:
-                            app.logger.info(f"Found ElevenLabs audio URL: {audio_url}")
-                        else:
-                            app.logger.error("No audio_url found in latest history item")
-                            app.logger.error(f"Available fields: {list(latest_item.keys())}")
-                            # Use Appwrite URL if available, otherwise local file
-                            audio_url = appwrite_file_url or f"/audio-files/{audio_result['audio_file_name']}"
-                    else:
-                        app.logger.error("No history items found in response")
-                        # Use Appwrite URL if available, otherwise local file
-                        audio_url = appwrite_file_url or f"/audio-files/{audio_result['audio_file_name']}"
-                
-                # Format the response
-                return jsonify({
-                    "status": "success",
-                    "data": {
-                        "script": script,
-                        "audio_url": audio_url,  # ElevenLabs URL, Appwrite URL, or local file URL
-                        "appwrite_file_id": appwrite_file_id,
-                        "appwrite_file_url": appwrite_file_url,
-                        "audio_file": audio_result["audio_file"],  # Local file path (backup)
-                        "audio_file_name": audio_result["audio_file_name"],
-                        "topic": topic,
-                        "style": style,
-                        "duration": duration,
-                        "voice_id": voice_id
-                    }
-                })
-                
-            except Exception as history_error:
-                app.logger.error(f"Failed to get ElevenLabs history: {str(history_error)}")
-                # Fallback to Appwrite URL or local file
-                audio_url = appwrite_file_url or f"/audio-files/{audio_result['audio_file_name']}"
-                return jsonify({
-                    "status": "success",
-                    "data": {
-                        "script": script,
-                        "audio_url": audio_url,
-                        "appwrite_file_id": appwrite_file_id,
-                        "appwrite_file_url": appwrite_file_url,
-                        "audio_file": audio_result["audio_file"],
-                        "audio_file_name": audio_result["audio_file_name"],
-                        "topic": topic,
-                        "style": style,
-                        "duration": duration,
-                        "voice_id": voice_id
-                    }
-                })
-            
-        except Exception as audio_error:
-            app.logger.error(f"Audio generation failed: {str(audio_error)}")
-            return jsonify({
-                "status": "error",
-                "message": f"Audio generation failed: {str(audio_error)}"
-            }), 500
-        
-    except json.JSONDecodeError as e:
-        app.logger.error(f"JSON decode failed: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": "Invalid JSON returned by team"
-        }), 500
-        
-    except Exception as e:
-        app.logger.error(f"General error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/audio-files/<filename>', methods=['GET'])
-def serve_audio_file(filename):
-    """
-    Serve generated audio files
-    """
-    try:
-        audio_path = os.path.join("audio_generations", filename)
-        if os.path.exists(audio_path):
-            return send_file(audio_path, mimetype='audio/mpeg')
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Audio file not found"
-            }), 404
-    except Exception as e:
-        app.logger.error(f"Error serving audio file: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
